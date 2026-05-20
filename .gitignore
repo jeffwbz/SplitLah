@@ -1,0 +1,16 @@
+.env
+*.db
+*.persistence
+*.db-shm
+*.db-wal
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+*.egg-info/
+dist/
+*.log
+bot_*.txt
+.claude/
