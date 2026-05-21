@@ -727,7 +727,19 @@ async def edit_got_vname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     async with get_db() as db:
         await add_trip_member(db, ctx["trip_id"], display_name=name, telegram_user_id=None)
 
-    return await _show_edit_menu(update, context, send=True)
+    ctx["bot_msg_id"] = await safe_edit(
+        context, chat.id, ctx["bot_msg_id"],
+        f"✅ *{name}* added!\n\nType another name, or tap Done:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Done", callback_data="emenu_add_done")],
+        ]),
+    )
+    return EDIT_ADD_VNAME
+
+
+async def edit_add_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _show_edit_menu(update, context)
 
 
 async def edit_menu_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -926,6 +938,7 @@ def build_edit_trip_handler() -> ConversationHandler:
             ],
             EDIT_ADD_VNAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_got_vname),
+                back(edit_add_done, pattern=r"^emenu_add_done$"),
                 back(_show_edit_menu, pattern=r"^emenu_back$"),
                 back(cancel_edit_trip, pattern=r"^edit_cancel$"),
             ],
