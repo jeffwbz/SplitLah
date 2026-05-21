@@ -35,16 +35,16 @@ ONBOARD_TZ, ONBOARD_CURRENCY, ONBOARD_TRIP_NAME = range(3)
 _KEY = "ob_ctx"
 
 _POPULAR: list[tuple[str, str]] = [
-    ("SGT  UTC+8",     "Asia/Singapore"),
-    ("MYT  UTC+8",     "Asia/Kuala_Lumpur"),
-    ("HKT  UTC+8",     "Asia/Hong_Kong"),
-    ("CST  UTC+8",     "Asia/Shanghai"),
-    ("JST  UTC+9",     "Asia/Tokyo"),
-    ("KST  UTC+9",     "Asia/Seoul"),
-    ("ICT  UTC+7",     "Asia/Bangkok"),
-    ("WIB  UTC+7",     "Asia/Jakarta"),
-    ("IST  UTC+5:30",  "Asia/Kolkata"),
-    ("GST  UTC+4",     "Asia/Dubai"),
+    ("SGT UTC+8",     "Asia/Singapore"),
+    ("MYT UTC+8",     "Asia/Kuala_Lumpur"),
+    ("HKT UTC+8",     "Asia/Hong_Kong"),
+    ("CST UTC+8",     "Asia/Shanghai"),
+    ("JST UTC+9",     "Asia/Tokyo"),
+    ("KST UTC+9",     "Asia/Seoul"),
+    ("ICT UTC+7",     "Asia/Bangkok"),
+    ("WIB UTC+7",     "Asia/Jakarta"),
+    ("IST UTC+5:30",  "Asia/Kolkata"),
+    ("GST UTC+4",     "Asia/Dubai"),
     ("UTC",            "UTC"),
     ("GMT/BST",        "Europe/London"),
     ("CET/CEST",       "Europe/Paris"),
@@ -97,7 +97,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         active_id = context.chat_data.get("active_trip_id")
         active = next((t for t in trips if t["id"] == active_id), trips[0])
         await update.message.reply_text(
-            f"👋 Welcome back!\n\nActive trip: *{active['name']}*\n/add to log an expense · /balances · /help",
+            f"👋 Welcome back!\n\n"
+            f"Active trip: *{active['name']}*\n\n"
+            f"/add — log an expense\n"
+            f"/simplify — see the fewest payments to settle up\n"
+            f"/balances · /history · /help",
             parse_mode="Markdown",
         )
         return ConversationHandler.END

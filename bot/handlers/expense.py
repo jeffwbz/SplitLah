@@ -212,6 +212,15 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await register_context(update, context)
     chat = update.effective_chat
 
+    old_ctx = context.user_data.get(_k(chat.id))
+    if old_ctx and old_ctx.get("bot_msg_id"):
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat.id, message_id=old_ctx["bot_msg_id"], text="Cancelled."
+            )
+        except Exception:
+            pass
+
     async with get_db() as db:
         trips = await get_trips_in_chat(db, chat.id)
 

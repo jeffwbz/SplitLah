@@ -121,6 +121,15 @@ async def cmd_newtrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     chat = update.effective_chat
     user = update.effective_user
 
+    old_ctx = context.user_data.get(_k(chat.id))
+    if old_ctx and old_ctx.get("bot_msg_id"):
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat.id, message_id=old_ctx["bot_msg_id"], text="Cancelled."
+            )
+        except Exception:
+            pass
+
     # Pre-load Telegram group members (empty list in private chat)
     telegram_members: list[dict] = []
     if chat.type in ("group", "supergroup"):
@@ -361,20 +370,27 @@ async def got_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception:
         pass
 
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]])
     if not name:
         ctx["bot_msg_id"] = await safe_edit(
-            context, chat.id, ctx["bot_msg_id"],
-            "Name?",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]]),
+            context, chat.id, ctx["bot_msg_id"], "Name?", reply_markup=cancel_kb,
         )
         return TRIP_ADD_NAME
     if len(name) > 64:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
-            "Name is too long (max 64 characters). Try again:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]]),
+            "Name is too long (max 64 characters). Try again:", reply_markup=cancel_kb,
         )
         return TRIP_ADD_NAME
+    try:
+        float(name)
+        ctx["bot_msg_id"] = await safe_edit(
+            context, chat.id, ctx["bot_msg_id"],
+            "Please enter a name, not a number. Try again:", reply_markup=cancel_kb,
+        )
+        return TRIP_ADD_NAME
+    except ValueError:
+        pass
 
     ctx["virtual_members"].append(name)
     ctx["bot_msg_id"] = await safe_edit(
@@ -679,28 +695,34 @@ async def edit_got_vname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         pass
 
+    back_cancel_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("← Back", callback_data="emenu_back"),
+         InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")],
+    ])
     if not name:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             "Member's name:\n\n_Name can't be empty._",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("← Back", callback_data="emenu_back"),
-                 InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")],
-            ]),
+            parse_mode="Markdown", reply_markup=back_cancel_kb,
         )
         return EDIT_ADD_VNAME
     if len(name) > 64:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             "Member's name:\n\n_Name is too long (max 64 characters)._",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("← Back", callback_data="emenu_back"),
-                 InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")],
-            ]),
+            parse_mode="Markdown", reply_markup=back_cancel_kb,
         )
         return EDIT_ADD_VNAME
+    try:
+        float(name)
+        ctx["bot_msg_id"] = await safe_edit(
+            context, chat.id, ctx["bot_msg_id"],
+            "Please enter a name, not a number. Try again:",
+            reply_markup=back_cancel_kb,
+        )
+        return EDIT_ADD_VNAME
+    except ValueError:
+        pass
 
     async with get_db() as db:
         await add_trip_member(db, ctx["trip_id"], display_name=name, telegram_user_id=None)

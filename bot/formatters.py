@@ -61,12 +61,13 @@ def fmt_money(amount: float, currency: str) -> str:
 
 def display_name(member: dict) -> str:
     """Works with both trip_members rows and plain user dicts."""
-    if "display_name" in member and member["display_name"]:
-        return member["display_name"]
+    dn = member.get("display_name")
+    if dn:
+        return str(dn)
     if member.get("username"):
         return f"@{member['username']}"
     parts = [member.get("first_name") or "", member.get("last_name") or ""]
-    return " ".join(p for p in parts if p) or f"Member#{member.get('id', '?')}"
+    return " ".join(str(p) for p in parts if p) or f"Member#{member.get('id', '?')}"
 
 
 def user_display_name(user: dict) -> str:

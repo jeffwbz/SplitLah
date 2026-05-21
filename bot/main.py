@@ -74,18 +74,17 @@ async def _post_init(application: Application) -> None:
         BotCommand("cancel", "Cancel current operation"),
     ])
     await application.bot.set_my_description(
-        "SplitLah — group expense splitting, done right.\n\n"
-        "• Create trips for holidays, housemates, or any group outing\n"
+        "SplitLah — split group expenses, hassle-free.\n\n"
+        "• Create trips for holidays, housemates, or any outing\n"
         "• Log expenses in any currency with live FX conversion\n"
-        "• Split costs equally, by ratio, percentage, or exact amount\n"
-        "• Automatic debt simplification — settle up with the fewest payments\n"
-        "• Nudge friends who owe money\n"
-        "• Works in group chats and private chats\n"
-        "• Timestamps shown in Singapore time (SGT, UTC+8) by default — use /settimezone to change\n\n"
+        "• Split equally, by ratio, percentage, or exact amount\n"
+        "• /simplify — figures out the fewest payments needed to settle all debts\n"
+        "• Nudge friends who owe you\n"
+        "• Works in group chats and private chats\n\n"
         "Free. No ads. No subscriptions."
     )
     await application.bot.set_my_short_description(
-        "Split trip expenses with friends. Multi-currency, debt simplification. Free, no ads."
+        "Track shared expenses and settle up with the fewest payments. Free, no ads."
     )
     logger.info("SplitLah ready.")
 

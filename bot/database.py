@@ -353,14 +353,20 @@ async def get_expense_history(
                 t_expenses,
                 t_trip_members.c.display_name.label("payer_name"),
             )
-            .join(t_trip_members, t_trip_members.c.id == t_expenses.c.paid_by_member)
+            .outerjoin(t_trip_members, t_trip_members.c.id == t_expenses.c.paid_by_member)
             .where(t_expenses.c.trip_id == trip_id)
             .order_by(t_expenses.c.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
     ).mappings().fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        if not d.get("payer_name"):
+            d["payer_name"] = "Unknown"
+        result.append(d)
+    return result
 
 
 async def count_expenses(session: AsyncSession, trip_id: int) -> int:
@@ -444,24 +450,36 @@ async def get_expense_shares(session: AsyncSession, expense_id: int) -> list[dic
             select(
                 t_shares.c.share_amount,
                 t_trip_members.c.display_name,
+                t_trip_members.c.id.label("member_id"),
             )
-            .join(t_trip_members, t_trip_members.c.id == t_shares.c.trip_member_id)
+            .outerjoin(t_trip_members, t_trip_members.c.id == t_shares.c.trip_member_id)
             .where(t_shares.c.expense_id == expense_id)
             .order_by(t_trip_members.c.id)
         )
     ).mappings().fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        if not d.get("display_name"):
+            d["display_name"] = "Unknown"
+        result.append(d)
+    return result
 
 
 async def get_expense_by_id(session: AsyncSession, expense_id: int) -> dict | None:
     row = (
         await session.execute(
             select(t_expenses, t_trip_members.c.display_name.label("payer_name"))
-            .join(t_trip_members, t_trip_members.c.id == t_expenses.c.paid_by_member)
+            .outerjoin(t_trip_members, t_trip_members.c.id == t_expenses.c.paid_by_member)
             .where(t_expenses.c.id == expense_id)
         )
     ).mappings().fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    d = dict(row)
+    if not d.get("payer_name"):
+        d["payer_name"] = "Unknown"
+    return d
 
 
 async def delete_expense(session: AsyncSession, expense_id: int) -> None:

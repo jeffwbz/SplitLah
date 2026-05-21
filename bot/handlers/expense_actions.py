@@ -31,7 +31,7 @@ from bot.database import (
     get_user_timezone,
     update_expense_description,
 )
-from bot.formatters import fmt_datetime, fmt_money, fmt_split_mode, resolve_tz
+from bot.formatters import display_name, fmt_datetime, fmt_money, fmt_split_mode, resolve_tz
 from bot.handlers.common import safe_edit, silent_answer
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ def _build_detail_text(exp: dict, base_currency: str, shares: list[dict], tz=Non
     if shares:
         lines.append("")
         for s in shares:
-            lines.append(f"  {s['display_name']} · {fmt_money(s['share_amount'], base_currency)}")
+            lines.append(f"  {display_name(s)} · {fmt_money(s['share_amount'], base_currency)}")
     lines += ["", f"_Added {fmt_datetime(exp['created_at'], tz=tz)}_"]
     return "\n".join(lines)
 
