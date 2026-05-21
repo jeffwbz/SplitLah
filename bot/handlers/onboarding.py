@@ -32,6 +32,15 @@ from bot.handlers.common import safe_edit, silent_answer
 
 ONBOARD_TZ, ONBOARD_CURRENCY, ONBOARD_TRIP_NAME = range(3)
 
+async def ob_done_callback(update, context) -> None:
+    """Dismiss the post-onboarding action keyboard."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
 _KEY = "ob_ctx"
 
 _POPULAR: list[tuple[str, str]] = [
@@ -76,7 +85,10 @@ def _currency_keyboard() -> InlineKeyboardMarkup:
 
 
 def _cancel_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="ob_cancel")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Create trip later", callback_data="ob_skip_trip")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="ob_cancel")],
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -257,17 +269,33 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
     context.chat_data["active_trip_id"] = trip_id
     context.user_data.pop(_KEY, None)
 
-    tz_line = f"🕐 Timezone: {ctx['tz_label']}\n" if ctx.get("tz_label") else ""
+    tz_line = f" · 🕐 {ctx['tz_label']}" if ctx.get("tz_label") else ""
     await safe_edit(
         context, chat.id, bot_msg_id,
-        f"🎉 *All set!*\n\n"
-        f"✅ Trip: *{name}*\n"
-        f"💰 Currency: {currency}\n"
-        f"{tz_line}\n"
-        f"Here's what to do next:\n"
-        f"• /trips to add more members\n"
-        f"• /add to log your first expense\n"
-        f"• /help for all commands",
+        f"🎉 *{name}* is ready!\n\n"
+        f"💰 {currency}{tz_line}\n\n"
+        f"Add members before you start, or jump straight in:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Add members", callback_data=f"edit_trip_{trip_id}")],
+            [InlineKeyboardButton("▶ Start logging", callback_data="ob_done")],
+        ]),
+    )
+    return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# Skip trip creation
+# ---------------------------------------------------------------------------
+
+async def onboard_skip_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop(_KEY, None)
+    await query.edit_message_text(
+        "✅ *Preferences saved!*\n\n"
+        "Use /newtrip whenever you're ready to create a trip.\n"
+        "/help for all commands",
         parse_mode="Markdown",
     )
     return ConversationHandler.END
@@ -309,6 +337,7 @@ def build_start_handler() -> ConversationHandler:
             ],
             ONBOARD_TRIP_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_got_trip_name),
+                CallbackQueryHandler(onboard_skip_trip, pattern=r"^ob_skip_trip$"),
                 CallbackQueryHandler(cancel_onboarding, pattern=r"^ob_cancel$"),
             ],
         },

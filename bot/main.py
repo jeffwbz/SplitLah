@@ -38,7 +38,7 @@ from bot.handlers.balance import (
     simp_more_callback,
 )
 from bot.handlers.common import cmd_help, register_context, stale_callback
-from bot.handlers.onboarding import build_start_handler
+from bot.handlers.onboarding import build_start_handler, ob_done_callback
 from bot.handlers.expense import build_expense_handler
 from bot.handlers.expense_actions import build_expense_action_handler
 from bot.handlers.settle import (
@@ -118,6 +118,7 @@ def main() -> None:
 
     # sw_trip_ must run before any conversation's silent_answer fallback can swallow it
     app.add_handler(CallbackQueryHandler(switch_trip_callback, pattern=r"^sw_trip_\d+$"), group=-1)
+    app.add_handler(CallbackQueryHandler(ob_done_callback, pattern=r"^ob_done$"), group=-1)
 
     # Non-conversation callback handlers — registered in group=-1 so ConversationHandler
     # fallbacks (silent_answer) can't swallow them when another conversation is active
