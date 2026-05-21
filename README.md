@@ -6,6 +6,7 @@ Split group expenses fairly, track debts, and settle up — all inside Telegram.
 
 ## Features
 
+- **Guided first-time setup** — `/start` walks you through timezone, currency, and your first trip; prompts to add members immediately after, or skip trip creation and come back later
 - **Guided expense entry** — step-by-step inline keyboard flow: description → amount → currency → who paid → split mode → participants → confirm
 - **Four split modes** — equal, ratio (e.g. 2:1:1), percentage (must total 100), exact amounts
 - **Multi-currency** — live FX conversion via [ExchangeRate-API](https://exchangerate-api.com) (160+ currencies) with fallback to [frankfurter.app](https://frankfurter.app) (~32 currencies); rates cached for 1 hour
@@ -24,6 +25,7 @@ Split group expenses fairly, track debts, and settle up — all inside Telegram.
 
 | Command | Description |
 |---|---|
+| `/start` | First-time setup: timezone → currency → first trip |
 | `/newtrip` | Create a new trip |
 | `/trips` | List trips and switch active trip; tap ✏️ to rename, add/remove members, clear history, or delete |
 | `/add` | Record a new expense (guided flow) |
