@@ -95,7 +95,7 @@ async def expense_action_entry(update: Update, context: ContextTypes.DEFAULT_TYP
         shares = await get_expense_shares(db, expense_id) if exp else []
         tz = resolve_tz(await get_user_timezone(db, user_id))
 
-    if not exp or not trip:
+    if not exp or not trip or exp["trip_id"] != trip_id or trip["chat_id"] != chat.id:
         await query.answer("Expense not found.", show_alert=True)
         return ConversationHandler.END
 
@@ -149,7 +149,10 @@ async def expact_editdesc_entry(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if not ctx:
+        await query.answer("Session expired. Use /history to browse expenses.", show_alert=True)
+        return ConversationHandler.END
 
     async with get_db() as db:
         exp = await get_expense_by_id(db, ctx["expense_id"])
@@ -167,7 +170,10 @@ async def expact_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     query = update.callback_query
     await query.answer()
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if not ctx:
+        await query.answer("Session expired. Use /history to browse expenses.", show_alert=True)
+        return ConversationHandler.END
 
     async with get_db() as db:
         exp = await get_expense_by_id(db, ctx["expense_id"])

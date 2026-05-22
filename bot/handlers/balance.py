@@ -32,11 +32,13 @@ from bot.database import (
 )
 from bot.debt import simplify_debts
 from bot.formatters import fmt_balances, fmt_money, fmt_simplified
-from bot.handlers.common import register_context, safe_edit, silent_answer
+from bot.handlers.common import cancel_all_flows, register_context, safe_edit, silent_answer
 
 CURRENCY_PICK, CURRENCY_CUSTOM, CURRENCY_SELECT = range(3)
 
-_CUR_KEY = "cur_ctx"
+
+def _cur_k(chat_id: int) -> str:
+    return f"cur_ctx_{chat_id}"
 
 PAGE_SIZE = 10
 
@@ -199,7 +201,7 @@ async def simp_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     trip_id, debtor_id = int(parts[2]), int(parts[3])
 
     trip, transactions, member_map, breakdown = await _load_simplify_data(trip_id)
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.answer("Trip not found.", show_alert=True)
         raise ApplicationHandlerStop
     if debtor_id not in member_map:
@@ -223,7 +225,7 @@ async def simp_expand_all_callback(update: Update, context: ContextTypes.DEFAULT
     trip_id = int(query.data.split("_")[2])
 
     trip, transactions, member_map, breakdown = await _load_simplify_data(trip_id)
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.answer("Trip not found.", show_alert=True)
         raise ApplicationHandlerStop
 
@@ -244,7 +246,7 @@ async def simp_collapse_callback(update: Update, context: ContextTypes.DEFAULT_T
     trip_id = int(query.data.split("_")[2])
 
     trip, transactions, member_map, breakdown = await _load_simplify_data(trip_id)
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.answer("Trip not found.", show_alert=True)
         raise ApplicationHandlerStop
 
@@ -275,7 +277,7 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
 
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.edit_message_text("This trip no longer exists.")
         raise ApplicationHandlerStop
 
@@ -294,7 +296,7 @@ async def nudge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         trip = await get_trip(db, trip_id)
         expense_shares = await get_member_expense_shares(db, trip_id, debtor_id)
 
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.answer("Trip not found.", show_alert=True)
         raise ApplicationHandlerStop
 
@@ -406,6 +408,8 @@ def _cur_keyboard(trip_id: int) -> InlineKeyboardMarkup:
 
 async def cmd_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await register_context(update, context)
+    chat = update.effective_chat
+    await cancel_all_flows(context, chat.id)
     trip = await _require_trip(update, context)
     if not trip:
         return ConversationHandler.END
@@ -425,7 +429,7 @@ async def set_currency_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
-        if not trip:
+        if not trip or trip["chat_id"] != update.effective_chat.id:
             await query.answer("Trip not found.", show_alert=True)
             return ConversationHandler.END
         await set_trip_currency(db, trip_id, currency)
@@ -441,8 +445,9 @@ async def set_currency_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def ask_custom_base_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    chat = update.effective_chat
     _, trip_id_str, _ = query.data.split("_", 2)
-    context.chat_data[_CUR_KEY] = {
+    context.user_data[_cur_k(chat.id)] = {
         "trip_id": int(trip_id_str),
         "bot_msg_id": query.message.message_id,
     }
@@ -455,7 +460,7 @@ async def ask_custom_base_currency(update: Update, context: ContextTypes.DEFAULT
 
 async def got_custom_base_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    cur_ctx = context.chat_data.get(_CUR_KEY, {})
+    cur_ctx = context.user_data.get(_cur_k(chat.id), {})
     trip_id = cur_ctx.get("trip_id")
     bot_msg_id = cur_ctx.get("bot_msg_id")
     if not trip_id:
@@ -497,13 +502,14 @@ async def got_custom_base_currency(update: Update, context: ContextTypes.DEFAULT
 
 async def _apply_base_currency(update, context, trip_id: int, code: str, name: str) -> int:
     chat = update.effective_chat
-    cur_ctx = context.chat_data.pop(_CUR_KEY, {})
+    cur_ctx = context.user_data.pop(_cur_k(chat.id), {})
     bot_msg_id = cur_ctx.get("bot_msg_id")
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
-        if not trip:
-            msg = update.message or update.callback_query.message
-            await msg.reply_text("Trip not found.")
+        if not trip or trip["chat_id"] != chat.id:
+            msg = update.message or (update.callback_query.message if update.callback_query else None)
+            if msg:
+                await msg.reply_text("Trip not found.")
             return ConversationHandler.END
         await set_trip_currency(db, trip_id, code)
 
@@ -546,7 +552,7 @@ async def cur_search_again(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cancel_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    cur_ctx = context.chat_data.pop(_CUR_KEY, None)
+    cur_ctx = context.user_data.pop(_cur_k(chat.id), None)
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Cancelled.")

@@ -31,7 +31,7 @@ from bot.database import (
     upsert_user,
 )
 from bot.formatters import user_display_name
-from bot.handlers.common import safe_edit, silent_answer
+from bot.handlers.common import cancel_all_flows, safe_edit, silent_answer
 
 ONBOARD_TZ, ONBOARD_CURRENCY, ONBOARD_TRIP_NAME = range(3)
 
@@ -112,7 +112,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         async with get_db() as db:
             active_id = await get_active_trip_id(db, chat.id)
         active = next((t for t in trips if t["id"] == active_id), trips[0])
-        await update.message.reply_text(
+        await update.message.reply_text(  # returning users — don't cancel active flows
             f"👋 Welcome back!\n\n"
             f"Active trip: *{active['name']}*\n\n"
             f"/add — log an expense\n"
@@ -121,6 +121,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             parse_mode="Markdown",
         )
         return ConversationHandler.END
+
+    await cancel_all_flows(context, chat.id)
 
     context.user_data[_KEY] = {
         "chat_id": chat.id,
@@ -223,7 +225,9 @@ async def _ask_trip_name(query, ctx: dict) -> int:
 
 async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data.get(_KEY, {})
+    ctx = context.user_data.get(_KEY)
+    if not ctx:
+        return ConversationHandler.END
     name = update.message.text.strip()
     try:
         await update.message.delete()

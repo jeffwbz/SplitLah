@@ -19,11 +19,13 @@ from telegram.ext import (
 )
 
 from bot.database import get_db, set_user_timezone
-from bot.handlers.common import safe_edit, silent_answer
+from bot.handlers.common import cancel_all_flows, register_context, safe_edit, silent_answer
 
 TZ_PICK, TZ_CUSTOM = range(2)
 
-_MSG_KEY = "stz_msg_id"
+
+def _stz_k(chat_id: int) -> str:
+    return f"stz_msg_id_{chat_id}"
 
 # (button label, IANA name)
 _POPULAR: list[tuple[str, str]] = [
@@ -72,11 +74,14 @@ def _saved_text(iana: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def cmd_settimezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await register_context(update, context)
+    chat = update.effective_chat
+    await cancel_all_flows(context, chat.id)
     msg = await update.message.reply_text(
         "Choose your timezone:",
         reply_markup=_tz_keyboard(),
     )
-    context.user_data[_MSG_KEY] = msg.message_id
+    context.user_data[_stz_k(chat.id)] = msg.message_id
     return TZ_PICK
 
 
@@ -93,7 +98,7 @@ async def pick_popular_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     async with get_db() as db:
         await set_user_timezone(db, user_id, iana)
 
-    context.user_data.pop(_MSG_KEY, None)
+    context.user_data.pop(_stz_k(update.effective_chat.id), None)
     await query.edit_message_text(_saved_text(iana), parse_mode="Markdown")
     return ConversationHandler.END
 
@@ -109,7 +114,7 @@ async def ask_custom_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
              InlineKeyboardButton("❌ Cancel", callback_data="stz_cancel")],
         ]),
     )
-    context.user_data[_MSG_KEY] = query.message.message_id
+    context.user_data[_stz_k(update.effective_chat.id)] = query.message.message_id
     return TZ_CUSTOM
 
 
@@ -120,11 +125,15 @@ async def ask_custom_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def got_custom_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
     tz_str = update.message.text.strip()
-    msg_id = context.user_data.get(_MSG_KEY)
+    msg_id = context.user_data.get(_stz_k(chat.id))
     try:
         await update.message.delete()
     except Exception:
         pass
+
+    if msg_id is None:
+        await update.message.reply_text("Session expired. Use /settimezone to try again.")
+        return ConversationHandler.END
 
     try:
         ZoneInfo(tz_str)
@@ -139,13 +148,13 @@ async def got_custom_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                  InlineKeyboardButton("❌ Cancel", callback_data="stz_cancel")],
             ]),
         )
-        context.user_data[_MSG_KEY] = new_id
+        context.user_data[_stz_k(chat.id)] = new_id
         return TZ_CUSTOM
 
     async with get_db() as db:
         await set_user_timezone(db, update.effective_user.id, tz_str)
 
-    context.user_data.pop(_MSG_KEY, None)
+    context.user_data.pop(_stz_k(chat.id), None)
     await safe_edit(context, chat.id, msg_id, _saved_text(tz_str), parse_mode="Markdown")
     return ConversationHandler.END
 
@@ -154,12 +163,12 @@ async def back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("Choose your timezone:", reply_markup=_tz_keyboard())
-    context.user_data[_MSG_KEY] = query.message.message_id
+    context.user_data[_stz_k(update.effective_chat.id)] = query.message.message_id
     return TZ_PICK
 
 
 async def cancel_settimezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop(_MSG_KEY, None)
+    context.user_data.pop(_stz_k(update.effective_chat.id), None)
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Cancelled.")

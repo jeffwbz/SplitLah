@@ -57,6 +57,34 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
 
 
+async def cancel_all_flows(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Pop and dismiss every active text-input flow for this (user, chat)."""
+    for key in [
+        f"trip_ctx_{chat_id}",
+        f"edit_trip_ctx_{chat_id}",
+        f"expense_ctx_{chat_id}",
+        f"exp_act_ctx_{chat_id}",
+        f"cur_ctx_{chat_id}",
+    ]:
+        old = context.user_data.pop(key, None)
+        if old and isinstance(old, dict) and old.get("bot_msg_id"):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=old["bot_msg_id"], text="Cancelled."
+                )
+            except Exception:
+                pass
+    # settimezone stores just a message_id int
+    stz_msg_id = context.user_data.pop(f"stz_msg_id_{chat_id}", None)
+    if stz_msg_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=stz_msg_id, text="Cancelled."
+            )
+        except Exception:
+            pass
+
+
 async def stale_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer("This menu has expired — start a new command.", show_alert=True)

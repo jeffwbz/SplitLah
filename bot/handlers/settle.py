@@ -110,7 +110,7 @@ async def stl_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         balances = await get_net_balances(db, trip_id) if trip else []
         expenses = await get_member_expense_shares(db, trip_id, from_id) if trip else []
 
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.answer("Trip not found.", show_alert=True)
         raise ApplicationHandlerStop
 
@@ -176,7 +176,7 @@ async def stl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         trip = await get_trip(db, trip_id)
         balances = await get_net_balances(db, trip_id) if trip else []
 
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.edit_message_text("Trip not found.")
         raise ApplicationHandlerStop
 
@@ -219,7 +219,7 @@ async def stl_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         trip = await get_trip(db, trip_id)
         balances = await get_net_balances(db, trip_id) if trip else []
 
-    if not trip:
+    if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.edit_message_text("Trip not found.")
         raise ApplicationHandlerStop
 
