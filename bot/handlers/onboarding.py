@@ -22,6 +22,7 @@ from bot.database import (
     add_trip_member,
     create_trip,
     get_db,
+    get_group_telegram_members,
     get_trips_in_chat,
     set_user_timezone,
     upsert_group,
@@ -250,6 +251,8 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
     creator_id = ctx.get("creator_id", update.effective_user.id)
     user = update.effective_user
 
+    is_group = chat.type in ("group", "supergroup")
+
     async with get_db() as db:
         trip_id = await create_trip(
             db,
@@ -266,18 +269,35 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
         })
         await add_trip_member(db, trip_id, display_name=display, telegram_user_id=creator_id)
 
+        if is_group:
+            group_members = await get_group_telegram_members(db, chat.id)
+            for m in group_members:
+                if m["id"] != creator_id:
+                    await add_trip_member(
+                        db, trip_id,
+                        display_name=user_display_name(m),
+                        telegram_user_id=m["id"],
+                    )
+
     context.chat_data["active_trip_id"] = trip_id
     context.user_data.pop(_KEY, None)
 
     tz_line = f" · 🕐 {ctx['tz_label']}" if ctx.get("tz_label") else ""
+    if is_group:
+        body = "Group members included. Add someone not in this group, or start logging:"
+        add_btn = "➕ Add non-group member"
+    else:
+        body = "Add members before you start, or jump straight in:"
+        add_btn = "➕ Add members"
+
     await safe_edit(
         context, chat.id, bot_msg_id,
         f"🎉 *{name}* is ready!\n\n"
         f"💰 {currency}{tz_line}\n\n"
-        f"Add members before you start, or jump straight in:",
+        f"{body}",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Add members", callback_data=f"edit_trip_{trip_id}")],
+            [InlineKeyboardButton(add_btn, callback_data=f"edit_trip_{trip_id}")],
             [InlineKeyboardButton("▶ Start logging", callback_data="ob_done")],
         ]),
     )

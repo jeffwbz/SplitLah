@@ -104,8 +104,9 @@ def _members_keyboard(
         rows.append([InlineKeyboardButton(f"👤 {name}", callback_data="trip_noop")])
 
     n_total = len(selected_telegram) + len(virtual_members)
+    add_label = "➕ Add non-group member" if telegram_members else "➕ Add member"
     rows.append([
-        InlineKeyboardButton("➕ Add by name", callback_data="trip_addname"),
+        InlineKeyboardButton(add_label, callback_data="trip_addname"),
         InlineKeyboardButton(f"✔ Done ({n_total} selected)", callback_data="trip_members_done"),
     ])
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")])
@@ -143,7 +144,7 @@ async def cmd_newtrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         "base_currency": config.DEFAULT_CURRENCY,
         "bot_msg_id": None,
         "telegram_members": telegram_members,
-        "selected_telegram": {user.id},
+        "selected_telegram": {m["id"] for m in telegram_members} | {user.id},
         "virtual_members": [],
     }
     context.user_data[_k(chat.id)] = ctx
@@ -212,7 +213,10 @@ async def _apply_trip_currency(update, context, code: str) -> int:
     chat = update.effective_chat
     ctx = context.user_data[_k(chat.id)]
     ctx["base_currency"] = code
-    text = f"*{ctx['name']}* · {code}\n\nAdd members:"
+    if ctx["telegram_members"]:
+        text = f"*{ctx['name']}* · {code}\n\n👥 Group members are all pre-selected — deselect if needed, or add someone not in the group:"
+    else:
+        text = f"*{ctx['name']}* · {code}\n\nAdd members:"
     markup = _members_keyboard(
         ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"]
     )
@@ -669,7 +673,13 @@ async def edit_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await rename_trip(db, ctx["trip_id"], name)
 
     ctx["trip_name"] = name
-    return await _show_edit_menu(update, context, send=True)
+    ctx["bot_msg_id"] = await safe_edit(
+        context, chat.id, ctx["bot_msg_id"],
+        f"*{ctx['trip_name']}*",
+        parse_mode="Markdown",
+        reply_markup=_edit_menu_keyboard(),
+    )
+    return EDIT_MENU
 
 
 async def edit_menu_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -677,7 +687,8 @@ async def edit_menu_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.answer()
 
     await query.edit_message_text(
-        "Name?",
+        "Enter their name:\n\n_For someone who isn't in this group chat._",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("← Back", callback_data="emenu_back"),
              InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")],
