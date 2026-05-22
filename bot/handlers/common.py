@@ -60,6 +60,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cancel_all_flows(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
     """Pop and dismiss every active text-input flow for this (user, chat)."""
     for key in [
+        f"ob_ctx_{chat_id}",
         f"trip_ctx_{chat_id}",
         f"edit_trip_ctx_{chat_id}",
         f"expense_ctx_{chat_id}",

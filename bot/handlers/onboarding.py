@@ -44,7 +44,8 @@ async def ob_done_callback(update, context) -> None:
     except Exception:
         pass
 
-_KEY = "ob_ctx"
+def _ob_k(chat_id: int) -> str:
+    return f"ob_ctx_{chat_id}"
 
 _POPULAR: list[tuple[str, str]] = [
     ("SGT UTC+8",     "Asia/Singapore"),
@@ -124,7 +125,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     await cancel_all_flows(context, chat.id)
 
-    context.user_data[_KEY] = {
+    context.user_data[_ob_k(chat.id)] = {
         "chat_id": chat.id,
         "creator_id": user.id,
         "tz": None,
@@ -140,7 +141,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         parse_mode="Markdown",
         reply_markup=_tz_keyboard(),
     )
-    context.user_data[_KEY]["bot_msg_id"] = msg.message_id
+    context.user_data[_ob_k(chat.id)]["bot_msg_id"] = msg.message_id
     return ONBOARD_TZ
 
 
@@ -152,7 +153,7 @@ async def onboard_pick_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     iana = query.data[len("ob_tz_"):]
-    ctx = context.user_data[_KEY]
+    ctx = context.user_data[_ob_k(update.effective_chat.id)]
     ctx["tz"] = iana
     ctx["tz_label"] = next((lbl for lbl, iname in _POPULAR if iname == iana), iana)
 
@@ -193,7 +194,7 @@ async def onboard_skip_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def onboard_pick_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    ctx = context.user_data[_KEY]
+    ctx = context.user_data[_ob_k(update.effective_chat.id)]
     ctx["currency"] = query.data[len("ob_cur_"):]
     return await _ask_trip_name(query, ctx)
 
@@ -201,7 +202,7 @@ async def onboard_pick_currency(update: Update, context: ContextTypes.DEFAULT_TY
 async def onboard_skip_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    return await _ask_trip_name(query, context.user_data[_KEY])
+    return await _ask_trip_name(query, context.user_data[_ob_k(update.effective_chat.id)])
 
 
 async def _ask_trip_name(query, ctx: dict) -> int:
@@ -225,9 +226,16 @@ async def _ask_trip_name(query, ctx: dict) -> int:
 
 async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data.get(_KEY)
+    ctx = context.user_data.get(_ob_k(chat.id))
     if not ctx:
         return ConversationHandler.END
+
+    # Safety guard: abort if another flow already created a trip for this chat
+    async with get_db() as db:
+        if await get_trips_in_chat(db, chat.id):
+            context.user_data.pop(_ob_k(chat.id), None)
+            return ConversationHandler.END
+
     name = update.message.text.strip()
     try:
         await update.message.delete()
@@ -288,7 +296,7 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
 
     async with get_db() as db:
         await set_active_trip_id(db, chat.id, trip_id)
-    context.user_data.pop(_KEY, None)
+    context.user_data.pop(_ob_k(chat.id), None)
 
     tz_line = f" · 🕐 {ctx['tz_label']}" if ctx.get("tz_label") else ""
     if is_group:
@@ -319,7 +327,7 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
 async def onboard_skip_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    context.user_data.pop(_KEY, None)
+    context.user_data.pop(_ob_k(update.effective_chat.id), None)
     await query.edit_message_text(
         "✅ *Preferences saved!*\n\n"
         "Use /newtrip whenever you're ready to create a trip.\n"
@@ -334,7 +342,7 @@ async def onboard_skip_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # ---------------------------------------------------------------------------
 
 async def cancel_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop(_KEY, None)
+    context.user_data.pop(_ob_k(update.effective_chat.id), None)
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
