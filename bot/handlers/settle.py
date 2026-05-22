@@ -14,11 +14,13 @@ from telegram.ext import ApplicationHandlerStop, CommandHandler, ContextTypes
 
 from bot.database import (
     create_settlement,
+    get_active_trip_id,
     get_db,
     get_member_expense_shares,
     get_net_balances,
     get_trip,
     get_trips_in_chat,
+    set_active_trip_id,
 )
 from bot.debt import simplify_debts
 from bot.formatters import display_name, fmt_money
@@ -49,9 +51,9 @@ async def cmd_settle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat = update.effective_chat
 
     trip = None
-    active_id = context.chat_data.get("active_trip_id")
-    if active_id:
-        async with get_db() as db:
+    async with get_db() as db:
+        active_id = await get_active_trip_id(db, chat.id)
+        if active_id:
             t = await get_trip(db, active_id)
             if t and t["chat_id"] == chat.id:
                 trip = t
@@ -64,7 +66,8 @@ async def cmd_settle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
         if len(trips) == 1:
             trip = trips[0]
-            context.chat_data["active_trip_id"] = trip["id"]
+            async with get_db() as db:
+                await set_active_trip_id(db, chat.id, trip["id"])
         else:
             buttons = [[InlineKeyboardButton(t["name"], callback_data=f"sw_trip_{t['id']}")] for t in trips]
             await update.message.reply_text("Select a trip:", reply_markup=InlineKeyboardMarkup(buttons))

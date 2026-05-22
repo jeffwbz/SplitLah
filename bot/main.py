@@ -20,7 +20,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
-    PicklePersistence,
     filters,
 )
 
@@ -90,11 +89,9 @@ async def _post_init(application: Application) -> None:
 
 
 def main() -> None:
-    persistence = PicklePersistence(filepath="splitlah.persistence")
     app = (
         Application.builder()
         .token(BOT_TOKEN)
-        .persistence(persistence)
         .post_init(_post_init)
         .build()
     )

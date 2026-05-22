@@ -108,6 +108,12 @@ t_settlements = Table("settlements", metadata,
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
 )
 
+# Per-chat settings (active trip selection, replaces PicklePersistence)
+t_chat_settings = Table("chat_settings", metadata,
+    Column("chat_id", BigInteger, primary_key=True),
+    Column("active_trip_id", Integer, nullable=True),
+)
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -588,6 +594,28 @@ async def get_debtor_expense_breakdown(
         )
     ).mappings().fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Chat settings helpers
+# ---------------------------------------------------------------------------
+
+async def get_active_trip_id(session: AsyncSession, chat_id: int) -> int | None:
+    return await session.scalar(
+        select(t_chat_settings.c.active_trip_id).where(t_chat_settings.c.chat_id == chat_id)
+    )
+
+
+async def set_active_trip_id(session: AsyncSession, chat_id: int, trip_id: int | None) -> None:
+    existing = await session.scalar(
+        select(t_chat_settings.c.chat_id).where(t_chat_settings.c.chat_id == chat_id)
+    )
+    if existing is None:
+        await session.execute(insert(t_chat_settings).values(chat_id=chat_id, active_trip_id=trip_id))
+    else:
+        await session.execute(
+            update(t_chat_settings).where(t_chat_settings.c.chat_id == chat_id).values(active_trip_id=trip_id)
+        )
 
 
 async def get_member_expense_count(session: AsyncSession, member_id: int) -> int:

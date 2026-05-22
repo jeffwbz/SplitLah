@@ -21,9 +21,11 @@ from bot import config
 from bot.database import (
     add_trip_member,
     create_trip,
+    get_active_trip_id,
     get_db,
     get_group_telegram_members,
     get_trips_in_chat,
+    set_active_trip_id,
     set_user_timezone,
     upsert_group,
     upsert_user,
@@ -107,7 +109,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         trips = await get_trips_in_chat(db, chat.id)
 
     if trips:
-        active_id = context.chat_data.get("active_trip_id")
+        async with get_db() as db:
+            active_id = await get_active_trip_id(db, chat.id)
         active = next((t for t in trips if t["id"] == active_id), trips[0])
         await update.message.reply_text(
             f"👋 Welcome back!\n\n"
@@ -279,7 +282,8 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
                         telegram_user_id=m["id"],
                     )
 
-    context.chat_data["active_trip_id"] = trip_id
+    async with get_db() as db:
+        await set_active_trip_id(db, chat.id, trip_id)
     context.user_data.pop(_KEY, None)
 
     tz_line = f" · 🕐 {ctx['tz_label']}" if ctx.get("tz_label") else ""

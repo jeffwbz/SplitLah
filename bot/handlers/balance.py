@@ -20,12 +20,14 @@ from bot import config
 from bot.currency import is_currency_supported, search_currencies
 from bot.database import (
     count_expenses,
+    get_active_trip_id,
     get_db,
     get_expense_history,
     get_member_expense_shares,
     get_net_balances,
     get_trip,
     get_trips_in_chat,
+    set_active_trip_id,
     set_trip_currency,
 )
 from bot.debt import simplify_debts
@@ -40,9 +42,9 @@ PAGE_SIZE = 10
 
 
 async def _get_active_trip(context, chat_id: int) -> dict | None:
-    active_id = context.chat_data.get("active_trip_id")
-    if active_id:
-        async with get_db() as db:
+    async with get_db() as db:
+        active_id = await get_active_trip_id(db, chat_id)
+        if active_id:
             trip = await get_trip(db, active_id)
             if trip and trip["chat_id"] == chat_id:
                 return trip
@@ -65,7 +67,8 @@ async def _require_trip(update: Update, context) -> dict | None:
         await update.message.reply_text("No trips yet. Use /newtrip to create one.")
         return None
     if len(trips) == 1:
-        context.chat_data["active_trip_id"] = trips[0]["id"]
+        async with get_db() as db:
+            await set_active_trip_id(db, chat.id, trips[0]["id"])
         return trips[0]
 
     # Multiple trips, none active — ask user to switch

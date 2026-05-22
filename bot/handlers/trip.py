@@ -33,6 +33,7 @@ from bot.database import (
     clear_trip_expenses,
     create_trip,
     delete_trip_by_id,
+    get_active_trip_id,
     get_db,
     get_group_telegram_members,
     get_trip,
@@ -41,6 +42,7 @@ from bot.database import (
     get_member_expense_count,
     remove_trip_member,
     rename_trip,
+    set_active_trip_id,
     upsert_user,
     upsert_group,
     ensure_member,
@@ -494,7 +496,8 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await add_trip_member(db, trip_id, display_name=name, telegram_user_id=None)
 
     # Set this as the active trip for this chat
-    context.chat_data["active_trip_id"] = trip_id
+    async with get_db() as db:
+        await set_active_trip_id(db, ctx["chat_id"], trip_id)
 
     context.user_data.pop(_k(chat.id), None)
     await query.edit_message_text(
@@ -511,9 +514,9 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_context(update, context)
     chat = update.effective_chat
-    active_id = context.chat_data.get("active_trip_id")
 
     async with get_db() as db:
+        active_id = await get_active_trip_id(db, chat.id)
         trips = await get_trips_in_chat(db, chat.id)
 
     if not trips:
@@ -543,9 +546,9 @@ async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def switch_trip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     trip_id = int(query.data.split("_")[2])
-    context.chat_data["active_trip_id"] = trip_id
 
     async with get_db() as db:
+        await set_active_trip_id(db, update.effective_chat.id, trip_id)
         trip = await get_trip(db, trip_id)
 
     name = trip["name"] if trip else "Unknown"
@@ -878,8 +881,10 @@ async def edit_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
     async with get_db() as db:
         await delete_trip_by_id(db, ctx["trip_id"])
 
-    if context.chat_data.get("active_trip_id") == ctx.get("trip_id"):
-        context.chat_data.pop("active_trip_id", None)
+    async with get_db() as db:
+        current_active = await get_active_trip_id(db, chat.id)
+        if current_active == ctx.get("trip_id"):
+            await set_active_trip_id(db, chat.id, None)
 
     await query.edit_message_text(
         f"✅ *{ctx.get('trip_name', 'Trip')}* deleted.",

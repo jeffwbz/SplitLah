@@ -38,11 +38,13 @@ from bot import config
 from bot.currency import convert, is_currency_supported, resolve_alias
 from bot.database import (
     create_expense,
+    get_active_trip_id,
     get_db,
     get_trip,
     get_trip_currencies,
     get_trip_members,
     get_trips_in_chat,
+    set_active_trip_id,
 )
 from bot.formatters import display_name, fmt_expense_summary, fmt_money
 from bot.handlers.common import register_context, safe_edit, silent_answer
@@ -172,9 +174,9 @@ def _build_summary_text(ctx: dict) -> str:
 # ---------------------------------------------------------------------------
 
 async def _resolve_active_trip(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> dict | None:
-    active_id = context.chat_data.get("active_trip_id")
-    if active_id:
-        async with get_db() as db:
+    async with get_db() as db:
+        active_id = await get_active_trip_id(db, chat_id)
+        if active_id:
             trip = await get_trip(db, active_id)
             if trip and trip["chat_id"] == chat_id:
                 return trip
@@ -232,7 +234,8 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if active:
         return await _start_expense_for_trip(update, context, active)
     if len(trips) == 1:
-        context.chat_data["active_trip_id"] = trips[0]["id"]
+        async with get_db() as db:
+            await set_active_trip_id(db, chat.id, trips[0]["id"])
         return await _start_expense_for_trip(update, context, trips[0])
 
     buttons = [
@@ -251,9 +254,9 @@ async def select_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     query = update.callback_query
     await query.answer()
     trip_id = int(query.data.split("_")[1])
-    context.chat_data["active_trip_id"] = trip_id
 
     async with get_db() as db:
+        await set_active_trip_id(db, update.effective_chat.id, trip_id)
         trip = await get_trip(db, trip_id)
         members = await get_trip_members(db, trip_id)
         recent = await get_trip_currencies(db, trip_id)
@@ -312,7 +315,10 @@ async def _start_expense_for_trip(
 
 async def got_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        await update.message.reply_text("Something went wrong. Use /add to start again.")
+        return ConversationHandler.END
     desc = update.message.text.strip()
     try:
         await update.message.delete()
