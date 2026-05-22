@@ -214,6 +214,17 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await register_context(update, context)
     chat = update.effective_chat
 
+    # Cancel any competing text-input flows (newtrip or edit trip)
+    for competing_key in [f"trip_ctx_{chat.id}", f"edit_trip_ctx_{chat.id}"]:
+        old = context.user_data.pop(competing_key, None)
+        if old and old.get("bot_msg_id"):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat.id, message_id=old["bot_msg_id"], text="Cancelled."
+                )
+            except Exception:
+                pass
+
     old_ctx = context.user_data.get(_k(chat.id))
     if old_ctx and old_ctx.get("bot_msg_id"):
         try:
@@ -359,7 +370,9 @@ async def got_description(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def got_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        return ConversationHandler.END
     raw = update.message.text.strip().replace(",", "")
     try:
         await update.message.delete()
@@ -413,7 +426,9 @@ async def got_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def got_currency_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        return ConversationHandler.END
     raw = update.message.text.strip().upper()
     try:
         await update.message.delete()
@@ -597,7 +612,9 @@ async def done_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def got_split_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        return ConversationHandler.END
     raw_text = update.message.text
     try:
         await update.message.delete()

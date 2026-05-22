@@ -124,6 +124,17 @@ async def cmd_newtrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     chat = update.effective_chat
     user = update.effective_user
 
+    # Cancel any competing text-input flows (edit trip or expense)
+    for competing_key in [f"edit_trip_ctx_{chat.id}", f"expense_ctx_{chat.id}"]:
+        old = context.user_data.pop(competing_key, None)
+        if old and old.get("bot_msg_id"):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat.id, message_id=old["bot_msg_id"], text="Cancelled."
+                )
+            except Exception:
+                pass
+
     old_ctx = context.user_data.get(_k(chat.id))
     if old_ctx and old_ctx.get("bot_msg_id"):
         try:
@@ -166,7 +177,9 @@ async def cmd_newtrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        return ConversationHandler.END
     name = update.message.text.strip()
     try:
         await update.message.delete()
@@ -369,7 +382,9 @@ async def ask_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def got_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_k(chat.id)]
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        return ConversationHandler.END
     name = update.message.text.strip()
     try:
         await update.message.delete()
@@ -585,6 +600,17 @@ async def edit_trip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat = update.effective_chat
     trip_id = int(query.data.split("_")[2])
 
+    # Cancel any competing text-input flows (newtrip or expense)
+    for competing_key in [f"trip_ctx_{chat.id}", f"expense_ctx_{chat.id}"]:
+        old = context.user_data.pop(competing_key, None)
+        if old and old.get("bot_msg_id"):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat.id, message_id=old["bot_msg_id"], text="Cancelled."
+                )
+            except Exception:
+                pass
+
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
 
@@ -648,7 +674,9 @@ async def edit_menu_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def edit_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_ek(chat.id)]
+    ctx = context.user_data.get(_ek(chat.id))
+    if ctx is None:
+        return ConversationHandler.END
     name = update.message.text.strip()
     try:
         await update.message.delete()
@@ -702,7 +730,9 @@ async def edit_menu_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def edit_got_vname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
-    ctx = context.user_data[_ek(chat.id)]
+    ctx = context.user_data.get(_ek(chat.id))
+    if ctx is None:
+        return ConversationHandler.END
     name = update.message.text.strip()
     try:
         await update.message.delete()
