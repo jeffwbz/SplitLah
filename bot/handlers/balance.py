@@ -209,12 +209,32 @@ async def cmd_simplify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def _assert_active_trip(query, trip_id: int, chat_id: int) -> bool:
+    """Return True if trip_id is the current active trip for this chat.
+
+    If not, edit the message to an 'outdated view' notice and return False.
+    Callers should raise ApplicationHandlerStop when this returns False.
+    """
+    async with get_db() as db:
+        active_id = await get_active_trip_id(db, chat_id)
+    if active_id == trip_id:
+        return True
+    await query.answer()
+    await query.edit_message_text(
+        "This view is outdated — run /simplify to see current data."
+    )
+    return False
+
+
 async def simp_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """simp_more_{trip_id}_{debtor_id} — expand one debtor's expense breakdown."""
     query = update.callback_query
     parts = query.data.split("_")
     trip_id, debtor_id = int(parts[2]), int(parts[3])
     logger.debug("simp_more_callback: trip=%s debtor=%s", trip_id, debtor_id)
+
+    if not await _assert_active_trip(query, trip_id, update.effective_chat.id):
+        raise ApplicationHandlerStop
 
     trip, transactions, member_map, breakdown = await _load_simplify_data(trip_id)
     if not trip or trip["chat_id"] != update.effective_chat.id:
@@ -244,6 +264,9 @@ async def simp_expand_all_callback(update: Update, context: ContextTypes.DEFAULT
     trip_id = int(query.data.split("_")[2])
     logger.debug("simp_expand_all_callback: trip=%s", trip_id)
 
+    if not await _assert_active_trip(query, trip_id, update.effective_chat.id):
+        raise ApplicationHandlerStop
+
     trip, transactions, member_map, breakdown = await _load_simplify_data(trip_id)
     if not trip or trip["chat_id"] != update.effective_chat.id:
         await query.answer("Trip not found.", show_alert=True)
@@ -268,6 +291,9 @@ async def simp_collapse_callback(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     trip_id = int(query.data.split("_")[2])
     logger.debug("simp_collapse_callback: trip=%s", trip_id)
+
+    if not await _assert_active_trip(query, trip_id, update.effective_chat.id):
+        raise ApplicationHandlerStop
 
     trip, transactions, member_map, breakdown = await _load_simplify_data(trip_id)
     if not trip or trip["chat_id"] != update.effective_chat.id:

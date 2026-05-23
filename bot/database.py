@@ -135,6 +135,43 @@ async def init_db() -> None:
             logger.info("init_db: added timezone column to users")
         except Exception:
             pass  # column already exists — expected on all non-fresh deploys
+
+        # One-time cleanup: delete trips produced by the name-corruption bug.
+        # Pattern: trip name exactly matches a member's display_name in that same trip,
+        # AND the trip has no expenses (so it's safe to remove).
+        try:
+            result = await conn.execute(text("""
+                DELETE FROM trips
+                WHERE id IN (
+                    SELECT DISTINCT t.id
+                    FROM trips t
+                    JOIN trip_members tm
+                      ON tm.trip_id = t.id
+                     AND lower(tm.display_name) = lower(t.name)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM expenses e WHERE e.trip_id = t.id
+                    )
+                )
+            """))
+            deleted = result.rowcount if result.rowcount is not None else 0
+            if deleted:
+                logger.info("init_db: removed %d corrupted empty trip(s) (name = member display_name)", deleted)
+        except Exception as exc:
+            logger.warning("init_db: corrupted-trip cleanup failed: %s", exc)
+
+        # Reset any chat_settings pointers that now reference a deleted trip.
+        try:
+            await conn.execute(text("""
+                UPDATE chat_settings
+                SET active_trip_id = NULL
+                WHERE active_trip_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM trips WHERE id = chat_settings.active_trip_id
+                  )
+            """))
+        except Exception as exc:
+            logger.warning("init_db: chat_settings cleanup failed: %s", exc)
+
     logger.info("init_db: done")
 
 
