@@ -1,9 +1,15 @@
+import logging
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN: str = os.environ["TELEGRAM_BOT_TOKEN"]
+logger = logging.getLogger(__name__)
+
+BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
 
 _raw = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///splitlah.db")
 if _raw.startswith("postgres://"):

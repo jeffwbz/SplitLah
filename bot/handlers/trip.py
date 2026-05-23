@@ -1,15 +1,24 @@
 """
-Trip management: /newtrip, /trips, /switchtrip.
+Trip management: /newtrip, /trips, switch_trip, edit-trip flow.
 
 /newtrip flow
 -------------
-TRIP_NAME       → user types a name
-TRIP_CURRENCY   → user picks base currency
-TRIP_MEMBERS    → toggle Telegram group members + add virtual members by name
-TRIP_ADD_NAME   → user types a virtual member's name
-TRIP_CONFIRM    → confirm creation
+TRIP_NAME           → user types a name
+TRIP_CURRENCY       → user picks base currency (or searches)
+TRIP_CURRENCY_SEARCH → user types a currency query
+TRIP_CURRENCY_RESULTS → user picks from search results
+TRIP_MEMBERS        → toggle Telegram group members + add virtual members
+TRIP_ADD_NAME       → user types a virtual member's name
+TRIP_CONFIRM        → confirm creation
 
-Works in both private chats (virtual-only members) and group chats (mix).
+Edit trip flow
+--------------
+EDIT_MENU           → rename | add member | remove member | clear history | delete trip
+EDIT_NAME           → user types new trip name
+EDIT_ADD_VNAME      → user types virtual member name
+EDIT_REMOVE         → pick a member to remove
+EDIT_CONFIRM_CLEAR  → confirm clearing all history
+EDIT_CONFIRM_DELETE → confirm deleting the trip
 """
 from __future__ import annotations
 
@@ -33,19 +42,19 @@ from bot.database import (
     clear_trip_expenses,
     create_trip,
     delete_trip_by_id,
+    ensure_member,
     get_active_trip_id,
     get_db,
     get_group_telegram_members,
+    get_member_expense_count,
     get_trip,
     get_trip_members,
     get_trips_in_chat,
-    get_member_expense_count,
     remove_trip_member,
     rename_trip,
     set_active_trip_id,
-    upsert_user,
     upsert_group,
-    ensure_member,
+    upsert_user,
 )
 from bot.formatters import user_display_name
 from bot.handlers.common import cancel_all_flows, register_context, safe_edit, silent_answer
@@ -56,16 +65,13 @@ TRIP_NAME, TRIP_CURRENCY, TRIP_MEMBERS, TRIP_ADD_NAME, TRIP_CONFIRM = range(5)
 EDIT_MENU, EDIT_NAME, EDIT_ADD_VNAME, EDIT_REMOVE, EDIT_CONFIRM_CLEAR, EDIT_CONFIRM_DELETE = range(5, 11)
 TRIP_CURRENCY_SEARCH, TRIP_CURRENCY_RESULTS = range(11, 13)
 
-_KEY = "trip_ctx"
-_EDIT_KEY = "edit_trip_ctx"
-
 
 def _k(chat_id: int) -> str:
-    return f"{_KEY}_{chat_id}"
+    return f"trip_ctx_{chat_id}"
 
 
 def _ek(chat_id: int) -> str:
-    return f"{_EDIT_KEY}_{chat_id}"
+    return f"edit_trip_ctx_{chat_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +80,7 @@ def _ek(chat_id: int) -> str:
 
 def _currency_keyboard() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(c, callback_data=f"tcur_{c}") for c in config.SUPPORTED_CURRENCIES[i:i+4]]
+        [InlineKeyboardButton(c, callback_data=f"tcur_{c}") for c in config.SUPPORTED_CURRENCIES[i:i + 4]]
         for i in range(0, len(config.SUPPORTED_CURRENCIES), 4)
     ]
     rows.append([
@@ -91,17 +97,14 @@ def _members_keyboard(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    # Telegram members (two per row)
-    tele_items = list(telegram_members)
-    for i in range(0, len(tele_items), 2):
+    for i in range(0, len(telegram_members), 2):
         row = []
-        for m in tele_items[i:i+2]:
+        for m in telegram_members[i:i + 2]:
             tick = "✅ " if m["id"] in selected_telegram else ""
-            name = user_display_name(m)
-            row.append(InlineKeyboardButton(f"{tick}{name}", callback_data=f"ttog_{m['id']}"))
+            row.append(InlineKeyboardButton(f"{tick}{user_display_name(m)}", callback_data=f"ttog_{m['id']}"))
         rows.append(row)
 
-    # Virtual members already added (display only — greyed label)
+    # Virtual members already added — display only (no toggle)
     for name in virtual_members:
         rows.append([InlineKeyboardButton(f"👤 {name}", callback_data="trip_noop")])
 
@@ -115,6 +118,21 @@ def _members_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+def _edit_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✏️ Rename", callback_data="emenu_rename"),
+            InlineKeyboardButton("➕ Add member", callback_data="emenu_add"),
+        ],
+        [InlineKeyboardButton("🗑 Remove member", callback_data="emenu_remove")],
+        [
+            InlineKeyboardButton("🧹 Clear history", callback_data="emenu_clearhistory"),
+            InlineKeyboardButton("❌ Delete trip", callback_data="emenu_deletetrip"),
+        ],
+        [InlineKeyboardButton("✅ Done", callback_data="emenu_done")],
+    ])
+
+
 # ---------------------------------------------------------------------------
 # Entry — /newtrip
 # ---------------------------------------------------------------------------
@@ -123,10 +141,10 @@ async def cmd_newtrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await register_context(update, context)
     chat = update.effective_chat
     user = update.effective_user
+    logger.debug("cmd_newtrip: user=%s chat=%s", user.id, chat.id)
 
     await cancel_all_flows(context, chat.id)
 
-    # Pre-load Telegram group members (empty list in private chat)
     telegram_members: list[dict] = []
     if chat.type in ("group", "supergroup"):
         async with get_db() as db:
@@ -162,26 +180,30 @@ async def got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     name = update.message.text.strip()
     try:
         await update.message.delete()
     except Exception:
         pass
 
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]])
+
     if not name:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             "*New trip*\n\nName can't be empty. Try again:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]]),
+            reply_markup=cancel_kb,
         )
         return TRIP_NAME
+
     if len(name) > 100:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             "*New trip*\n\nName is too long (max 100 characters). Try again:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]]),
+            reply_markup=cancel_kb,
         )
         return TRIP_NAME
 
@@ -204,35 +226,6 @@ async def got_trip_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     code = query.data.split("_", 1)[1]
     return await _apply_trip_currency(update, context, code)
-
-
-async def _apply_trip_currency(update, context, code: str) -> int:
-    chat = update.effective_chat
-    ctx = context.user_data.get(_k(chat.id))
-    if ctx is None:
-        if update.callback_query:
-            await update.callback_query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
-        else:
-            await update.message.reply_text("Session expired. Use /newtrip to start again.")
-        return ConversationHandler.END
-    ctx["base_currency"] = code
-    if ctx["telegram_members"]:
-        text = f"*{ctx['name']}* · {code}\n\n👥 Group members are all pre-selected — deselect if needed, or add someone not in the group:"
-    else:
-        text = f"*{ctx['name']}* · {code}\n\nAdd members:"
-    markup = _members_keyboard(
-        ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"]
-    )
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
-    else:
-        ctx["bot_msg_id"] = await safe_edit(
-            context, chat.id, ctx["bot_msg_id"],
-            text,
-            parse_mode="Markdown",
-            reply_markup=markup,
-        )
-    return TRIP_MEMBERS
 
 
 async def got_trip_currency_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -270,11 +263,13 @@ async def got_trip_currency_search(update: Update, context: ContextTypes.DEFAULT
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     query_text = update.message.text.strip()
     try:
         await update.message.delete()
     except Exception:
         pass
+
     results = await search_currencies(query_text)
 
     if not results:
@@ -330,6 +325,38 @@ async def trip_currency_search_again(update: Update, context: ContextTypes.DEFAU
     return TRIP_CURRENCY_SEARCH
 
 
+async def _apply_trip_currency(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str) -> int:
+    chat = update.effective_chat
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        if update.callback_query:
+            await update.callback_query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
+        else:
+            await update.message.reply_text("Session expired. Use /newtrip to start again.")
+        return ConversationHandler.END
+
+    ctx["base_currency"] = code
+    if ctx["telegram_members"]:
+        text = (
+            f"*{ctx['name']}* · {code}\n\n"
+            "👥 Group members are all pre-selected — deselect if needed, "
+            "or add someone not in the group:"
+        )
+    else:
+        text = f"*{ctx['name']}* · {code}\n\nAdd members:"
+
+    markup = _members_keyboard(ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"])
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        ctx["bot_msg_id"] = await safe_edit(
+            context, chat.id, ctx["bot_msg_id"],
+            text, parse_mode="Markdown", reply_markup=markup,
+        )
+    return TRIP_MEMBERS
+
+
 # ---------------------------------------------------------------------------
 # Step 3a — toggle a Telegram group member
 # ---------------------------------------------------------------------------
@@ -355,15 +382,13 @@ async def toggle_telegram_member(update: Update, context: ContextTypes.DEFAULT_T
         selected.add(uid)
 
     await query.edit_message_reply_markup(
-        reply_markup=_members_keyboard(
-            ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"]
-        )
+        reply_markup=_members_keyboard(ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"])
     )
     return TRIP_MEMBERS
 
 
 # ---------------------------------------------------------------------------
-# Step 3b — ask for a virtual member name
+# Step 3b — virtual member name input
 # ---------------------------------------------------------------------------
 
 async def ask_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -381,6 +406,7 @@ async def got_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     name = update.message.text.strip()
     try:
         await update.message.delete()
@@ -388,17 +414,18 @@ async def got_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         pass
 
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]])
+
     if not name:
-        ctx["bot_msg_id"] = await safe_edit(
-            context, chat.id, ctx["bot_msg_id"], "Name?", reply_markup=cancel_kb,
-        )
+        ctx["bot_msg_id"] = await safe_edit(context, chat.id, ctx["bot_msg_id"], "Name?", reply_markup=cancel_kb)
         return TRIP_ADD_NAME
+
     if len(name) > 64:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             "Name is too long (max 64 characters). Try again:", reply_markup=cancel_kb,
         )
         return TRIP_ADD_NAME
+
     try:
         float(name)
         ctx["bot_msg_id"] = await safe_edit(
@@ -414,9 +441,7 @@ async def got_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context, chat.id, ctx["bot_msg_id"],
         f"*{ctx['name']}* · {ctx['base_currency']}\n\nAdd members:",
         parse_mode="Markdown",
-        reply_markup=_members_keyboard(
-            ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"]
-        ),
+        reply_markup=_members_keyboard(ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"]),
     )
     return TRIP_MEMBERS
 
@@ -439,8 +464,7 @@ async def done_trip_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.answer("Add at least one member.", show_alert=True)
         return TRIP_MEMBERS
 
-    # Build member preview
-    members_preview = []
+    members_preview: list[str] = []
     for uid in ctx["selected_telegram"]:
         m = next((m for m in ctx["telegram_members"] if m["id"] == uid), None)
         if m:
@@ -451,7 +475,6 @@ async def done_trip_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         members_preview.append(name)
 
     preview_text = ", ".join(members_preview)
-
     await query.edit_message_text(
         f"*{ctx['name']}* · {ctx['base_currency']}\n"
         f"{n_total} members: {preview_text}\n\n"
@@ -479,6 +502,7 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if ctx is None:
         await query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
         return ConversationHandler.END
+
     user = update.effective_user
 
     async with get_db() as db:
@@ -490,11 +514,8 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             created_by=ctx["creator_id"],
         )
 
-        # Add selected Telegram users
         for uid in ctx["selected_telegram"]:
-            telegram_user = next(
-                (m for m in ctx["telegram_members"] if m["id"] == uid), None
-            )
+            telegram_user = next((m for m in ctx["telegram_members"] if m["id"] == uid), None)
             if telegram_user:
                 dname = user_display_name(telegram_user)
             elif uid == ctx["creator_id"]:
@@ -508,11 +529,9 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 dname = f"User#{uid}"
             await add_trip_member(db, trip_id, display_name=dname, telegram_user_id=uid)
 
-        # Add virtual members
         for name in ctx["virtual_members"]:
             await add_trip_member(db, trip_id, display_name=name, telegram_user_id=None)
 
-    # Set this as the active trip for this chat
     async with get_db() as db:
         await set_active_trip_id(db, ctx["chat_id"], trip_id)
 
@@ -525,12 +544,13 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 # ---------------------------------------------------------------------------
-# /trips — list trips and switch active
+# /trips — list and switch
 # ---------------------------------------------------------------------------
 
 async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_context(update, context)
     chat = update.effective_chat
+    logger.debug("cmd_trips: user=%s chat=%s", update.effective_user.id, chat.id)
 
     async with get_db() as db:
         active_id = await get_active_trip_id(db, chat.id)
@@ -541,15 +561,13 @@ async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     lines = ["*Trips*", ""]
-    buttons = []
+    buttons: list[list[InlineKeyboardButton]] = []
     for t in trips:
         marker = "✅ " if t["id"] == active_id else ""
-        lines.append(f"{'• ' if t['id'] != active_id else '✅ '}*{t['name']}* · {t['base_currency']}")
+        prefix = "✅ " if t["id"] == active_id else "• "
+        lines.append(f"{prefix}*{t['name']}* · {t['base_currency']}")
         buttons.append([
-            InlineKeyboardButton(
-                f"{marker}{t['name']}",
-                callback_data=f"sw_trip_{t['id']}",
-            ),
+            InlineKeyboardButton(f"{marker}{t['name']}", callback_data=f"sw_trip_{t['id']}"),
             InlineKeyboardButton("✏️", callback_data=f"edit_trip_{t['id']}"),
         ])
 
@@ -561,9 +579,11 @@ async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def switch_trip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """sw_trip_{trip_id} — make the given trip active."""
     query = update.callback_query
     trip_id = int(query.data.split("_")[2])
     chat_id = update.effective_chat.id
+    logger.debug("switch_trip_callback: trip=%s chat=%s", trip_id, chat_id)
 
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
@@ -581,29 +601,15 @@ async def switch_trip_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ---------------------------------------------------------------------------
-# Edit trip flow
+# Edit trip — entry
 # ---------------------------------------------------------------------------
-
-def _edit_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✏️ Rename", callback_data="emenu_rename"),
-            InlineKeyboardButton("➕ Add member", callback_data="emenu_add"),
-        ],
-        [InlineKeyboardButton("🗑 Remove member", callback_data="emenu_remove")],
-        [
-            InlineKeyboardButton("🧹 Clear history", callback_data="emenu_clearhistory"),
-            InlineKeyboardButton("❌ Delete trip", callback_data="emenu_deletetrip"),
-        ],
-        [InlineKeyboardButton("✅ Done", callback_data="emenu_done")],
-    ])
-
 
 async def edit_trip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     chat = update.effective_chat
     trip_id = int(query.data.split("_")[2])
+    logger.debug("edit_trip_entry: trip=%s chat=%s user=%s", trip_id, chat.id, update.effective_user.id)
 
     await cancel_all_flows(context, chat.id)
 
@@ -628,6 +634,10 @@ async def edit_trip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return EDIT_MENU
 
 
+# ---------------------------------------------------------------------------
+# Edit menu — re-show helper
+# ---------------------------------------------------------------------------
+
 async def _show_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *, send: bool = False) -> int:
     if update.callback_query:
         await update.callback_query.answer()
@@ -637,8 +647,10 @@ async def _show_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
         if update.callback_query:
             await update.callback_query.answer("Session expired.", show_alert=True)
         return ConversationHandler.END
+
     text = f"*{ctx['trip_name']}*"
     if send:
+        # Called from a text-input handler — edit the stored bot message
         bot_msg_id = ctx.get("bot_msg_id")
         if bot_msg_id:
             try:
@@ -650,13 +662,19 @@ async def _show_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
                     reply_markup=_edit_menu_keyboard(),
                 )
                 return EDIT_MENU
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("_show_edit_menu: failed to edit msg=%s: %s", bot_msg_id, exc)
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=_edit_menu_keyboard())
     else:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=_edit_menu_keyboard())
+        await update.callback_query.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=_edit_menu_keyboard()
+        )
     return EDIT_MENU
 
+
+# ---------------------------------------------------------------------------
+# Edit menu actions
+# ---------------------------------------------------------------------------
 
 async def edit_menu_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -680,26 +698,30 @@ async def edit_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     name = update.message.text.strip()
     try:
         await update.message.delete()
     except Exception:
         pass
 
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")]])
+
     if not name:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             f"New name for *{ctx['trip_name']}*:\n\n_Name can't be empty._",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")]]),
+            reply_markup=cancel_kb,
         )
         return EDIT_NAME
+
     if len(name) > 100:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             f"New name for *{ctx['trip_name']}*:\n\n_Name is too long (max 100 characters)._",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")]]),
+            reply_markup=cancel_kb,
         )
         return EDIT_NAME
 
@@ -739,6 +761,7 @@ async def edit_got_vname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     name = update.message.text.strip()
     try:
         await update.message.delete()
@@ -749,6 +772,7 @@ async def edit_got_vname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         [InlineKeyboardButton("← Back", callback_data="emenu_back"),
          InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")],
     ])
+
     if not name:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
@@ -756,6 +780,7 @@ async def edit_got_vname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown", reply_markup=back_cancel_kb,
         )
         return EDIT_ADD_VNAME
+
     if len(name) > 64:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
@@ -763,6 +788,7 @@ async def edit_got_vname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown", reply_markup=back_cancel_kb,
         )
         return EDIT_ADD_VNAME
+
     try:
         float(name)
         ctx["bot_msg_id"] = await safe_edit(
@@ -807,16 +833,15 @@ async def edit_menu_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     rows: list[list[InlineKeyboardButton]] = []
     for m in members:
-        name = m["display_name"]
         count = expense_counts[m["id"]]
         if count > 0:
             rows.append([InlineKeyboardButton(
-                f"🚫 {name} (has expenses)",
+                f"🚫 {m['display_name']} (has expenses)",
                 callback_data="edit_noop",
             )])
         else:
             rows.append([InlineKeyboardButton(
-                f"🗑 {name}",
+                f"🗑 {m['display_name']}",
                 callback_data=f"edel_{m['id']}",
             )])
     rows.append([InlineKeyboardButton("← Back", callback_data="emenu_back")])
@@ -856,9 +881,7 @@ async def edit_remove_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def edit_noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.callback_query.answer(
-        "Can't remove members with expenses.", show_alert=True
-    )
+    await update.callback_query.answer("Can't remove members with expenses.", show_alert=True)
     return EDIT_REMOVE
 
 
@@ -889,8 +912,13 @@ async def edit_confirm_clear(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat = update.effective_chat
     ctx = context.user_data.pop(_ek(chat.id), {})
 
+    trip_id = ctx.get("trip_id")
+    if not trip_id:
+        await query.edit_message_text("Session expired.")
+        return ConversationHandler.END
+
     async with get_db() as db:
-        await clear_trip_expenses(db, ctx["trip_id"])
+        await clear_trip_expenses(db, trip_id)
 
     await query.edit_message_text(
         f"✅ *{ctx.get('trip_name', 'Trip')}* history cleared.",
@@ -926,12 +954,16 @@ async def edit_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat = update.effective_chat
     ctx = context.user_data.pop(_ek(chat.id), {})
 
-    async with get_db() as db:
-        await delete_trip_by_id(db, ctx["trip_id"])
+    trip_id = ctx.get("trip_id")
+    if not trip_id:
+        await query.edit_message_text("Session expired.")
+        return ConversationHandler.END
 
     async with get_db() as db:
+        await delete_trip_by_id(db, trip_id)
+        # Clear active trip pointer if this was the active one
         current_active = await get_active_trip_id(db, chat.id)
-        if current_active == ctx.get("trip_id"):
+        if current_active == trip_id:
             await set_active_trip_id(db, chat.id, None)
 
     await query.edit_message_text(
@@ -944,10 +976,36 @@ async def edit_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def edit_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    chat = update.effective_chat
-    context.user_data.pop(_ek(chat.id), None)
-
+    context.user_data.pop(_ek(update.effective_chat.id), None)
     await query.edit_message_text("Done.")
+    return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# Cancel helpers
+# ---------------------------------------------------------------------------
+
+async def cancel_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    chat = update.effective_chat
+    ctx = context.user_data.pop(_k(chat.id), None)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("Cancelled.")
+    else:
+        bot_msg_id = ctx.get("bot_msg_id") if ctx else None
+        if bot_msg_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat.id, message_id=bot_msg_id, text="Cancelled."
+                )
+                try:
+                    await update.message.delete()
+                except Exception:
+                    pass
+            except Exception:
+                await update.message.reply_text("Cancelled.")
+        else:
+            await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
 
@@ -975,89 +1033,13 @@ async def cancel_edit_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
-def build_edit_trip_handler() -> ConversationHandler:
-    back = CallbackQueryHandler
-    return ConversationHandler(
-        entry_points=[CallbackQueryHandler(edit_trip_entry, pattern=r"^edit_trip_\d+$")],
-        states={
-            EDIT_MENU: [
-                CallbackQueryHandler(edit_menu_rename, pattern=r"^emenu_rename$"),
-                CallbackQueryHandler(edit_menu_add, pattern=r"^emenu_add$"),
-                CallbackQueryHandler(edit_menu_remove, pattern=r"^emenu_remove$"),
-                CallbackQueryHandler(edit_menu_clearhistory, pattern=r"^emenu_clearhistory$"),
-                CallbackQueryHandler(edit_menu_deletetrip, pattern=r"^emenu_deletetrip$"),
-                CallbackQueryHandler(edit_done, pattern=r"^emenu_done$"),
-            ],
-            EDIT_CONFIRM_CLEAR: [
-                CallbackQueryHandler(edit_confirm_clear, pattern=r"^emenu_confirm_clear$"),
-                CallbackQueryHandler(_show_edit_menu, pattern=r"^emenu_back$"),
-            ],
-            EDIT_CONFIRM_DELETE: [
-                CallbackQueryHandler(edit_confirm_delete, pattern=r"^emenu_confirm_delete$"),
-                CallbackQueryHandler(_show_edit_menu, pattern=r"^emenu_back$"),
-            ],
-            EDIT_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_got_name),
-                back(cancel_edit_trip, pattern=r"^edit_cancel$"),
-            ],
-            EDIT_ADD_VNAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_got_vname),
-                back(edit_add_done, pattern=r"^emenu_add_done$"),
-                back(_show_edit_menu, pattern=r"^emenu_back$"),
-                back(cancel_edit_trip, pattern=r"^edit_cancel$"),
-            ],
-            EDIT_REMOVE: [
-                CallbackQueryHandler(edit_remove_member, pattern=r"^edel_\d+$"),
-                CallbackQueryHandler(edit_noop, pattern=r"^edit_noop$"),
-                CallbackQueryHandler(_show_edit_menu, pattern=r"^emenu_back$"),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_edit_trip),
-            CallbackQueryHandler(cancel_edit_trip, pattern=r"^edit_cancel$"),
-            CallbackQueryHandler(silent_answer),
-        ],
-        per_user=True,
-        per_chat=True,
-        allow_reentry=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Cancel / noop
-# ---------------------------------------------------------------------------
-
-async def cancel_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    chat = update.effective_chat
-    ctx = context.user_data.pop(_k(chat.id), None)
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Cancelled.")
-    else:
-        bot_msg_id = ctx.get("bot_msg_id") if ctx else None
-        if bot_msg_id:
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat.id, message_id=bot_msg_id, text="Cancelled."
-                )
-                try:
-                    await update.message.delete()
-                except Exception:
-                    pass
-            except Exception:
-                await update.message.reply_text("Cancelled.")
-        else:
-            await update.message.reply_text("Cancelled.")
-    return ConversationHandler.END
-
-
 async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     return TRIP_MEMBERS
 
 
 # ---------------------------------------------------------------------------
-# Build handler
+# Build handlers
 # ---------------------------------------------------------------------------
 
 def build_trip_handler() -> ConversationHandler:
@@ -1102,6 +1084,53 @@ def build_trip_handler() -> ConversationHandler:
         fallbacks=[
             CommandHandler("cancel", cancel_trip),
             CommandHandler("newtrip", cmd_newtrip),
+            CallbackQueryHandler(silent_answer),
+        ],
+        per_user=True,
+        per_chat=True,
+        allow_reentry=True,
+    )
+
+
+def build_edit_trip_handler() -> ConversationHandler:
+    return ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_trip_entry, pattern=r"^edit_trip_\d+$")],
+        states={
+            EDIT_MENU: [
+                CallbackQueryHandler(edit_menu_rename, pattern=r"^emenu_rename$"),
+                CallbackQueryHandler(edit_menu_add, pattern=r"^emenu_add$"),
+                CallbackQueryHandler(edit_menu_remove, pattern=r"^emenu_remove$"),
+                CallbackQueryHandler(edit_menu_clearhistory, pattern=r"^emenu_clearhistory$"),
+                CallbackQueryHandler(edit_menu_deletetrip, pattern=r"^emenu_deletetrip$"),
+                CallbackQueryHandler(edit_done, pattern=r"^emenu_done$"),
+            ],
+            EDIT_CONFIRM_CLEAR: [
+                CallbackQueryHandler(edit_confirm_clear, pattern=r"^emenu_confirm_clear$"),
+                CallbackQueryHandler(_show_edit_menu, pattern=r"^emenu_back$"),
+            ],
+            EDIT_CONFIRM_DELETE: [
+                CallbackQueryHandler(edit_confirm_delete, pattern=r"^emenu_confirm_delete$"),
+                CallbackQueryHandler(_show_edit_menu, pattern=r"^emenu_back$"),
+            ],
+            EDIT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_got_name),
+                CallbackQueryHandler(cancel_edit_trip, pattern=r"^edit_cancel$"),
+            ],
+            EDIT_ADD_VNAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_got_vname),
+                CallbackQueryHandler(edit_add_done, pattern=r"^emenu_add_done$"),
+                CallbackQueryHandler(_show_edit_menu, pattern=r"^emenu_back$"),
+                CallbackQueryHandler(cancel_edit_trip, pattern=r"^edit_cancel$"),
+            ],
+            EDIT_REMOVE: [
+                CallbackQueryHandler(edit_remove_member, pattern=r"^edel_\d+$"),
+                CallbackQueryHandler(edit_noop, pattern=r"^edit_noop$"),
+                CallbackQueryHandler(_show_edit_menu, pattern=r"^emenu_back$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_edit_trip),
+            CallbackQueryHandler(cancel_edit_trip, pattern=r"^edit_cancel$"),
             CallbackQueryHandler(silent_answer),
         ],
         per_user=True,

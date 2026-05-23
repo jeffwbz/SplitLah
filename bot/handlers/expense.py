@@ -65,11 +65,9 @@ logger = logging.getLogger(__name__)
     CONFIRM,
 ) = range(10)
 
-_KEY = "expense_ctx"
-
 
 def _k(chat_id: int) -> str:
-    return f"{_KEY}_{chat_id}"
+    return f"expense_ctx_{chat_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +96,7 @@ def _currency_keyboard(recent: list[str] | None = None) -> InlineKeyboardMarkup:
         if extra:
             rows.append([InlineKeyboardButton(f"🕐 {c}", callback_data=f"cur_{c}") for c in extra[:4]])
     rows += [
-        [InlineKeyboardButton(c, callback_data=f"cur_{c}") for c in config.SUPPORTED_CURRENCIES[i:i+4]]
+        [InlineKeyboardButton(c, callback_data=f"cur_{c}") for c in config.SUPPORTED_CURRENCIES[i:i + 4]]
         for i in range(0, len(config.SUPPORTED_CURRENCIES), 4)
     ]
     rows.append([InlineKeyboardButton("Other…", callback_data="cur_other")])
@@ -130,7 +128,7 @@ def _participants_keyboard(members: list[dict], selected: set[int]) -> InlineKey
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(members), 2):
         row = []
-        for m in members[i:i+2]:
+        for m in members[i:i + 2]:
             tick = "✅ " if m["id"] in selected else ""
             row.append(InlineKeyboardButton(f"{tick}{display_name(m)}", callback_data=f"tog_{m['id']}"))
         rows.append(row)
@@ -173,7 +171,7 @@ def _build_summary_text(ctx: dict) -> str:
 # Trip resolution helpers
 # ---------------------------------------------------------------------------
 
-async def _resolve_active_trip(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> dict | None:
+async def _resolve_active_trip(chat_id: int) -> dict | None:
     async with get_db() as db:
         active_id = await get_active_trip_id(db, chat_id)
         if active_id:
@@ -207,12 +205,14 @@ def _init_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, trip: dict) -> d
 
 
 # ---------------------------------------------------------------------------
-# Entry — /add
+# Entry — /add (also /newexpense)
 # ---------------------------------------------------------------------------
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await register_context(update, context)
     chat = update.effective_chat
+    user = update.effective_user
+    logger.debug("cmd_add: user=%s chat=%s", user.id, chat.id)
 
     await cancel_all_flows(context, chat.id)
 
@@ -223,9 +223,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("No trips yet. Use /newtrip to create one.")
         return ConversationHandler.END
 
-    active = await _resolve_active_trip(context, chat.id)
+    active = await _resolve_active_trip(chat.id)
     if active:
         return await _start_expense_for_trip(update, context, active)
+
     if len(trips) == 1:
         async with get_db() as db:
             await set_active_trip_id(db, chat.id, trips[0]["id"])
@@ -265,7 +266,7 @@ async def select_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         )
         return ConversationHandler.END
 
-    ctx = _init_ctx(context, update.effective_chat.id, trip)
+    ctx = _init_ctx(context, chat_id, trip)
     ctx["bot_msg_id"] = query.message.message_id
     ctx["members"] = members
     ctx["recent_currencies"] = recent
@@ -282,6 +283,7 @@ async def _start_expense_for_trip(
     update: Update, context: ContextTypes.DEFAULT_TYPE, trip: dict
 ) -> int:
     chat = update.effective_chat
+
     async with get_db() as db:
         members = await get_trip_members(db, trip["id"])
         recent = await get_trip_currencies(db, trip["id"])
@@ -316,25 +318,26 @@ async def got_description(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if ctx is None:
         await update.message.reply_text("Something went wrong. Use /add to start again.")
         return ConversationHandler.END
+
     desc = update.message.text.strip()
     try:
         await update.message.delete()
     except Exception:
         pass
 
-    if len(desc) > 200:
+    if not desc:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
-            f"*{ctx['trip_name']}*\n\nDescription too long (max 200 chars). Try again:",
+            f"*{ctx['trip_name']}*\n\nDescription can't be empty. Try again:",
             parse_mode="Markdown",
             reply_markup=_cancel_kb(),
         )
         return DESC
 
-    if not desc:
+    if len(desc) > 200:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
-            f"*{ctx['trip_name']}*\n\nDescription can't be empty. Try again:",
+            f"*{ctx['trip_name']}*\n\nDescription too long (max 200 chars). Try again:",
             parse_mode="Markdown",
             reply_markup=_cancel_kb(),
         )
@@ -359,15 +362,17 @@ async def got_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     raw = update.message.text.strip().replace(",", "")
     try:
         await update.message.delete()
     except Exception:
         pass
+
     try:
         amount = float(raw)
         if amount <= 0:
-            raise ValueError
+            raise ValueError("must be positive")
     except ValueError:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
@@ -388,7 +393,7 @@ async def got_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — currency
+# Step 4 — currency (button or typed)
 # ---------------------------------------------------------------------------
 
 async def got_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -399,8 +404,8 @@ async def got_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
-    token = query.data.split("_", 1)[1]
 
+    token = query.data.split("_", 1)[1]
     if token == "other":
         await query.edit_message_text(
             "Currency code?  _(e.g. HKD, KRW, TWD)_",
@@ -418,6 +423,7 @@ async def got_currency_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     raw = update.message.text.strip().upper()
     try:
         await update.message.delete()
@@ -445,10 +451,7 @@ async def got_currency_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return CURRENCY_TXT
 
-    ctx["bot_msg_id"] = await safe_edit(
-        context, chat.id, ctx["bot_msg_id"],
-        "Checking rate…",
-    )
+    ctx["bot_msg_id"] = await safe_edit(context, chat.id, ctx["bot_msg_id"], "Checking rate…")
     return await _resolve_currency(context, chat.id, ctx, currency)
 
 
@@ -471,7 +474,7 @@ async def _resolve_currency(
                 f" (1 {currency} = {fx_rate:.4f} {ctx['base_currency']})_"
             )
         except Exception as exc:
-            logger.warning("FX error for %s: %s", currency, exc)
+            logger.warning("FX lookup failed for %s→%s: %s", currency, ctx["base_currency"], exc)
             ctx["bot_msg_id"] = await safe_edit(
                 context, chat_id, ctx["bot_msg_id"],
                 f"Couldn't get a rate for *{currency}* — try another code:",
@@ -504,7 +507,10 @@ async def got_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     ctx["paid_by_member"] = int(query.data.split("_")[1])
     member_map = {m["id"]: m for m in ctx["members"]}
-    payer = member_map[ctx["paid_by_member"]]
+    payer = member_map.get(ctx["paid_by_member"])
+    if payer is None:
+        await query.answer("Member not found. Please try again.", show_alert=True)
+        return PAYER
 
     await query.edit_message_text(
         f"Paid by *{display_name(payer)}*\n\nHow to split?",
@@ -531,8 +537,10 @@ async def got_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ctx["selected_participants"] = {m["id"] for m in ctx["members"]}
 
     labels = {
-        "equal": "Equal split", "ratio": "Ratio split",
-        "percentage": "Percentage split", "exact": "Exact amounts",
+        "equal": "Equal split",
+        "ratio": "Ratio split",
+        "percentage": "Percentage split",
+        "exact": "Exact amounts",
     }
     await query.edit_message_text(
         f"*{labels[ctx['split_mode']]}*\n\nWho's included?",
@@ -557,7 +565,10 @@ async def toggle_participant(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     uid = int(query.data.split("_")[1])
     sel: set[int] = ctx["selected_participants"]
-    sel.discard(uid) if uid in sel else sel.add(uid)
+    if uid in sel:
+        sel.discard(uid)
+    else:
+        sel.add(uid)
 
     await query.edit_message_reply_markup(
         reply_markup=_participants_keyboard(ctx["members"], sel)
@@ -616,6 +627,7 @@ async def got_split_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
+
     raw_text = update.message.text
     try:
         await update.message.delete()
@@ -655,28 +667,31 @@ async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
 
-    async with get_db() as db:
-        expense_id = await create_expense(
-            db,
-            trip_id=ctx["trip_id"],
-            paid_by_member=ctx["paid_by_member"],
-            description=ctx["description"],
-            amount=ctx["amount"],
-            currency=ctx["currency"],
-            amount_base=ctx["amount_base"],
-            base_currency=ctx["base_currency"],
-            fx_rate=ctx["fx_rate"],
-            split_mode=ctx["split_mode"],
-            created_by=update.effective_user.id,
-            shares=ctx["shares"],
-        )
+    user = update.effective_user
+    try:
+        async with get_db() as db:
+            expense_id = await create_expense(
+                db,
+                trip_id=ctx["trip_id"],
+                paid_by_member=ctx["paid_by_member"],
+                description=ctx["description"],
+                amount=ctx["amount"],
+                currency=ctx["currency"],
+                amount_base=ctx["amount_base"],
+                base_currency=ctx["base_currency"],
+                fx_rate=ctx["fx_rate"],
+                split_mode=ctx["split_mode"],
+                created_by=user.id,
+                shares=ctx["shares"],
+            )
+    except Exception as exc:
+        logger.exception("confirm_expense: DB error for user=%s chat=%s: %s", user.id, chat.id, exc)
+        await query.edit_message_text("Something went wrong saving the expense. Please try again.")
+        return ConversationHandler.END
 
     member_map = {m["id"]: m for m in ctx["members"]}
     payer = member_map[ctx["paid_by_member"]]
-    share_rows = [
-        {**member_map[mid], "share_amount": amt}
-        for mid, amt in ctx["shares"].items()
-    ]
+    share_rows = [{**member_map[mid], "share_amount": amt} for mid, amt in ctx["shares"].items()]
     expense_display = {
         "description": ctx["description"],
         "amount": ctx["amount"],
@@ -791,7 +806,7 @@ async def _back_to_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
     member_map = {m["id"]: m for m in ctx["members"]}
     payer_id = ctx.get("paid_by_member")
-    payer = member_map.get(payer_id, ctx["members"][0]) if payer_id else ctx["members"][0]
+    payer = member_map.get(payer_id) or ctx["members"][0]
     await query.edit_message_text(
         f"Paid by *{display_name(payer)}*\n\nHow to split?",
         parse_mode="Markdown",
@@ -810,8 +825,10 @@ async def _back_to_participants(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
     labels = {
-        "equal": "Equal split", "ratio": "Ratio split",
-        "percentage": "Percentage split", "exact": "Exact amounts",
+        "equal": "Equal split",
+        "ratio": "Ratio split",
+        "percentage": "Percentage split",
+        "exact": "Exact amounts",
     }
     await query.edit_message_text(
         f"*{labels[ctx['split_mode']]}*\n\nWho's included?",
@@ -906,7 +923,7 @@ async def cancel_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ---------------------------------------------------------------------------
 
 def build_expense_handler() -> ConversationHandler:
-    back = CallbackQueryHandler  # alias for readability below
+    back = CallbackQueryHandler  # alias for readability
 
     return ConversationHandler(
         entry_points=[

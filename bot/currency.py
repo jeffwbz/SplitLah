@@ -35,9 +35,11 @@ async def get_fx_rate(from_currency: str, to_currency: str) -> float:
         return 1.0
 
     key = f"{from_currency}-{to_currency}"
-    if key in _cache:
-        rate, ts = _cache[key]
+    cached = _cache.get(key)
+    if cached:
+        rate, ts = cached
         if time.time() - ts < _CACHE_TTL:
+            logger.debug("FX %s→%s: %.4f (cached)", from_currency, to_currency, rate)
             return rate
 
     try:
@@ -46,16 +48,22 @@ async def get_fx_rate(from_currency: str, to_currency: str) -> float:
         else:
             rate = await _get_fx_rate_frankfurter(from_currency, to_currency)
         _cache[key] = (rate, time.time())
+        logger.info("FX %s→%s: %.4f", from_currency, to_currency, rate)
         return rate
     except Exception as exc:
         logger.warning("FX lookup failed (%s→%s): %s", from_currency, to_currency, exc)
         if key in _cache:
-            return _cache[key][0]  # stale cache is better than nothing
+            stale_rate = _cache[key][0]
+            logger.warning("FX %s→%s: using stale cached rate %.4f", from_currency, to_currency, stale_rate)
+            return stale_rate
         raise
 
 
 async def _get_fx_rate_exchangerate(from_currency: str, to_currency: str) -> float:
-    url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_RATE_API_KEY}/pair/{from_currency}/{to_currency}"
+    url = (
+        f"https://v6.exchangerate-api.com/v6/{EXCHANGE_RATE_API_KEY}"
+        f"/pair/{from_currency}/{to_currency}"
+    )
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -88,6 +96,7 @@ async def get_all_currencies() -> dict[str, str]:
     if _currencies_cache:
         data, ts = _currencies_cache
         if time.time() - ts < _CACHE_TTL:
+            logger.debug("get_all_currencies: cache hit (%d currencies)", len(data))
             return data
     try:
         if EXCHANGE_RATE_API_KEY:
@@ -95,10 +104,12 @@ async def get_all_currencies() -> dict[str, str]:
         else:
             data = await _get_all_currencies_frankfurter()
         _currencies_cache = (data, time.time())
+        logger.info("get_all_currencies: fetched %d currencies", len(data))
         return data
     except Exception as exc:
         logger.warning("Currency list fetch failed: %s", exc)
         if _currencies_cache:
+            logger.warning("get_all_currencies: returning stale cache")
             return _currencies_cache[0]
         return {}
 

@@ -13,6 +13,7 @@ All monetary references use trip_member.id, not telegram user_id directly.
 """
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from sqlalchemy import (
@@ -22,6 +23,8 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import bot.config as cfg
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -57,7 +60,7 @@ t_group_members = Table("group_members", metadata,
 t_trips = Table("trips", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("name", String(256), nullable=False),
-    Column("chat_id", BigInteger, nullable=False),        # Telegram chat that owns this trip
+    Column("chat_id", BigInteger, nullable=False),
     Column("base_currency", String(8), nullable=False, default="SGD"),
     Column("created_by", BigInteger, ForeignKey("users.id"), nullable=False),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
@@ -108,7 +111,7 @@ t_settlements = Table("settlements", metadata,
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
 )
 
-# Per-chat settings (active trip selection, replaces PicklePersistence)
+# Per-chat settings (active trip selection)
 t_chat_settings = Table("chat_settings", metadata,
     Column("chat_id", BigInteger, primary_key=True),
     Column("active_trip_id", Integer, nullable=True),
@@ -123,12 +126,16 @@ _SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 
 async def init_db() -> None:
+    logger.info("init_db: creating tables if needed")
     async with engine.begin() as conn:
         await conn.run_sync(metadata.create_all)
+        # Migration: add timezone column if it doesn't exist yet
         try:
             await conn.execute(text("ALTER TABLE users ADD COLUMN timezone VARCHAR(64) DEFAULT NULL"))
+            logger.info("init_db: added timezone column to users")
         except Exception:
-            pass  # column already exists
+            pass  # column already exists — expected on all non-fresh deploys
+    logger.info("init_db: done")
 
 
 @asynccontextmanager
@@ -160,6 +167,7 @@ async def upsert_user(
                 id=user_id, username=username, first_name=first_name, last_name=last_name
             )
         )
+        logger.info("upsert_user: created user=%s username=%r", user_id, username)
     else:
         await session.execute(
             update(t_users).where(t_users.c.id == user_id).values(
@@ -172,6 +180,7 @@ async def upsert_group(session: AsyncSession, group_id: int, title: str) -> None
     existing = await session.scalar(select(t_groups.c.id).where(t_groups.c.id == group_id))
     if existing is None:
         await session.execute(insert(t_groups).values(id=group_id, title=title))
+        logger.info("upsert_group: created group=%s title=%r", group_id, title)
     else:
         await session.execute(update(t_groups).where(t_groups.c.id == group_id).values(title=title))
 
@@ -185,6 +194,7 @@ async def ensure_member(session: AsyncSession, group_id: int, user_id: int) -> N
     )
     if existing is None:
         await session.execute(insert(t_group_members).values(group_id=group_id, user_id=user_id))
+        logger.debug("ensure_member: added user=%s to group=%s", user_id, group_id)
 
 
 async def get_group_telegram_members(session: AsyncSession, group_id: int) -> list[dict]:
@@ -215,6 +225,7 @@ async def set_user_timezone(session: AsyncSession, user_id: int, tz: str) -> Non
     await session.execute(
         update(t_users).where(t_users.c.id == user_id).values(timezone=tz)
     )
+    logger.info("set_user_timezone: user=%s tz=%r", user_id, tz)
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +244,9 @@ async def create_trip(
             name=name, chat_id=chat_id, base_currency=base_currency, created_by=created_by
         )
     )
-    return result.inserted_primary_key[0]
+    trip_id: int = result.inserted_primary_key[0]
+    logger.info("create_trip: name=%r chat=%s currency=%s → id=%s", name, chat_id, base_currency, trip_id)
+    return trip_id
 
 
 async def get_trip(session: AsyncSession, trip_id: int) -> dict | None:
@@ -252,13 +265,16 @@ async def get_trips_in_chat(session: AsyncSession, chat_id: int) -> list[dict]:
 
 async def set_trip_currency(session: AsyncSession, trip_id: int, currency: str) -> None:
     await session.execute(update(t_trips).where(t_trips.c.id == trip_id).values(base_currency=currency))
+    logger.info("set_trip_currency: trip=%s currency=%s", trip_id, currency)
 
 
 async def delete_trip(session: AsyncSession, trip_id: int, requestor_id: int) -> bool:
+    """Delete a trip only if the requestor is the creator. Use delete_trip_by_id for admin ops."""
     trip = await get_trip(session, trip_id)
     if not trip or trip["created_by"] != requestor_id:
         return False
     await session.execute(t_trips.delete().where(t_trips.c.id == trip_id))
+    logger.info("delete_trip: trip=%s by user=%s", trip_id, requestor_id)
     return True
 
 
@@ -279,7 +295,10 @@ async def add_trip_member(
             telegram_user_id=telegram_user_id,
         )
     )
-    return result.inserted_primary_key[0]
+    member_id: int = result.inserted_primary_key[0]
+    logger.info("add_trip_member: trip=%s name=%r tg_user=%s → member_id=%s",
+                trip_id, display_name, telegram_user_id, member_id)
+    return member_id
 
 
 async def get_trip_members(session: AsyncSession, trip_id: int) -> list[dict]:
@@ -347,6 +366,12 @@ async def create_expense(
                 expense_id=expense_id, trip_member_id=member_id, share_amount=share_amount
             )
         )
+
+    logger.info(
+        "create_expense: id=%s trip=%s payer=%s desc=%r amount=%s %s (base=%s %s) split=%s",
+        expense_id, trip_id, paid_by_member, description,
+        amount, currency, amount_base, base_currency, split_mode,
+    )
     return expense_id
 
 
@@ -447,6 +472,7 @@ async def get_net_balances(session: AsyncSession, trip_id: int) -> list[dict]:
 
 async def rename_trip(session: AsyncSession, trip_id: int, name: str) -> None:
     await session.execute(update(t_trips).where(t_trips.c.id == trip_id).values(name=name))
+    logger.info("rename_trip: trip=%s new_name=%r", trip_id, name)
 
 
 async def get_expense_shares(session: AsyncSession, expense_id: int) -> list[dict]:
@@ -491,12 +517,14 @@ async def get_expense_by_id(session: AsyncSession, expense_id: int) -> dict | No
 async def delete_expense(session: AsyncSession, expense_id: int) -> None:
     await session.execute(t_shares.delete().where(t_shares.c.expense_id == expense_id))
     await session.execute(t_expenses.delete().where(t_expenses.c.id == expense_id))
+    logger.info("delete_expense: expense=%s", expense_id)
 
 
 async def update_expense_description(session: AsyncSession, expense_id: int, description: str) -> None:
     await session.execute(
         update(t_expenses).where(t_expenses.c.id == expense_id).values(description=description)
     )
+    logger.info("update_expense_description: expense=%s desc=%r", expense_id, description)
 
 
 async def clear_trip_expenses(session: AsyncSession, trip_id: int) -> None:
@@ -505,16 +533,18 @@ async def clear_trip_expenses(session: AsyncSession, trip_id: int) -> None:
     await session.execute(t_shares.delete().where(t_shares.c.expense_id.in_(expense_ids)))
     await session.execute(t_expenses.delete().where(t_expenses.c.trip_id == trip_id))
     await session.execute(t_settlements.delete().where(t_settlements.c.trip_id == trip_id))
+    logger.info("clear_trip_expenses: trip=%s", trip_id)
 
 
 async def delete_trip_by_id(session: AsyncSession, trip_id: int) -> None:
-    """Delete a trip and everything belonging to it."""
+    """Delete a trip and everything belonging to it. No creator check — caller is responsible."""
     expense_ids = select(t_expenses.c.id).where(t_expenses.c.trip_id == trip_id).scalar_subquery()
     await session.execute(t_shares.delete().where(t_shares.c.expense_id.in_(expense_ids)))
     await session.execute(t_expenses.delete().where(t_expenses.c.trip_id == trip_id))
     await session.execute(t_settlements.delete().where(t_settlements.c.trip_id == trip_id))
     await session.execute(t_trip_members.delete().where(t_trip_members.c.trip_id == trip_id))
     await session.execute(t_trips.delete().where(t_trips.c.id == trip_id))
+    logger.info("delete_trip_by_id: trip=%s", trip_id)
 
 
 async def get_member_expense_shares(
@@ -616,6 +646,7 @@ async def set_active_trip_id(session: AsyncSession, chat_id: int, trip_id: int |
         await session.execute(
             update(t_chat_settings).where(t_chat_settings.c.chat_id == chat_id).values(active_trip_id=trip_id)
         )
+    logger.debug("set_active_trip_id: chat=%s trip=%s", chat_id, trip_id)
 
 
 async def get_member_expense_count(session: AsyncSession, member_id: int) -> int:
@@ -632,6 +663,7 @@ async def remove_trip_member(session: AsyncSession, member_id: int) -> bool:
     if await get_member_expense_count(session, member_id) > 0:
         return False
     await session.execute(t_trip_members.delete().where(t_trip_members.c.id == member_id))
+    logger.info("remove_trip_member: member=%s", member_id)
     return True
 
 
@@ -658,4 +690,9 @@ async def create_settlement(
             note=note,
         )
     )
-    return result.inserted_primary_key[0]
+    settlement_id: int = result.inserted_primary_key[0]
+    logger.info(
+        "create_settlement: id=%s trip=%s from=%s to=%s amount=%s %s",
+        settlement_id, trip_id, from_member_id, to_member_id, amount, currency,
+    )
+    return settlement_id

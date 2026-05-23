@@ -4,6 +4,7 @@ Returning users (chat already has trips) get a welcome-back message.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -33,37 +34,33 @@ from bot.database import (
 from bot.formatters import user_display_name
 from bot.handlers.common import cancel_all_flows, safe_edit, silent_answer
 
+logger = logging.getLogger(__name__)
+
 ONBOARD_TZ, ONBOARD_CURRENCY, ONBOARD_TRIP_NAME = range(3)
 
-async def ob_done_callback(update, context) -> None:
-    """Dismiss the post-onboarding action keyboard."""
-    query = update.callback_query
-    await query.answer()
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
 
 def _ob_k(chat_id: int) -> str:
     return f"ob_ctx_{chat_id}"
 
+
+# (button label, IANA timezone name)
 _POPULAR: list[tuple[str, str]] = [
-    ("SGT UTC+8",     "Asia/Singapore"),
-    ("MYT UTC+8",     "Asia/Kuala_Lumpur"),
-    ("HKT UTC+8",     "Asia/Hong_Kong"),
-    ("CST UTC+8",     "Asia/Shanghai"),
-    ("JST UTC+9",     "Asia/Tokyo"),
-    ("KST UTC+9",     "Asia/Seoul"),
-    ("ICT UTC+7",     "Asia/Bangkok"),
-    ("WIB UTC+7",     "Asia/Jakarta"),
-    ("IST UTC+5:30",  "Asia/Kolkata"),
-    ("GST UTC+4",     "Asia/Dubai"),
-    ("UTC",            "UTC"),
-    ("GMT/BST",        "Europe/London"),
-    ("CET/CEST",       "Europe/Paris"),
-    ("EST/EDT",        "America/New_York"),
-    ("PST/PDT",        "America/Los_Angeles"),
-    ("AEST/AEDT",      "Australia/Sydney"),
+    ("SGT UTC+8",    "Asia/Singapore"),
+    ("MYT UTC+8",    "Asia/Kuala_Lumpur"),
+    ("HKT UTC+8",    "Asia/Hong_Kong"),
+    ("CST UTC+8",    "Asia/Shanghai"),
+    ("JST UTC+9",    "Asia/Tokyo"),
+    ("KST UTC+9",    "Asia/Seoul"),
+    ("ICT UTC+7",    "Asia/Bangkok"),
+    ("WIB UTC+7",    "Asia/Jakarta"),
+    ("IST UTC+5:30", "Asia/Kolkata"),
+    ("GST UTC+4",    "Asia/Dubai"),
+    ("UTC",          "UTC"),
+    ("GMT/BST",      "Europe/London"),
+    ("CET/CEST",     "Europe/Paris"),
+    ("EST/EDT",      "America/New_York"),
+    ("PST/PDT",      "America/Los_Angeles"),
+    ("AEST/AEDT",    "Australia/Sydney"),
 ]
 
 
@@ -72,7 +69,7 @@ def _tz_keyboard() -> InlineKeyboardMarkup:
     for i in range(0, len(_POPULAR), 2):
         row = [
             InlineKeyboardButton(label, callback_data=f"ob_tz_{iana}")
-            for label, iana in _POPULAR[i:i+2]
+            for label, iana in _POPULAR[i:i + 2]
         ]
         rows.append(row)
     rows.append([InlineKeyboardButton("Skip →", callback_data="ob_skip_tz")])
@@ -81,7 +78,7 @@ def _tz_keyboard() -> InlineKeyboardMarkup:
 
 def _currency_keyboard() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(c, callback_data=f"ob_cur_{c}") for c in config.SUPPORTED_CURRENCIES[i:i+4]]
+        [InlineKeyboardButton(c, callback_data=f"ob_cur_{c}") for c in config.SUPPORTED_CURRENCIES[i:i + 4]]
         for i in range(0, len(config.SUPPORTED_CURRENCIES), 4)
     ]
     rows.append([InlineKeyboardButton("Skip (SGD)", callback_data="ob_skip_cur")])
@@ -96,12 +93,27 @@ def _cancel_kb() -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
+# ob_done callback (registered in group=-1 in main.py)
+# ---------------------------------------------------------------------------
+
+async def ob_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dismiss the post-onboarding action keyboard."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Entry — /start
 # ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     chat = update.effective_chat
+    logger.debug("cmd_start: user=%s chat=%s", user.id, chat.id)
 
     async with get_db() as db:
         await upsert_user(db, user.id, user.username, user.first_name, user.last_name)
@@ -110,10 +122,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         trips = await get_trips_in_chat(db, chat.id)
 
     if trips:
+        # Returning user — just show a welcome back message without disrupting active flows
         async with get_db() as db:
             active_id = await get_active_trip_id(db, chat.id)
         active = next((t for t in trips if t["id"] == active_id), trips[0])
-        await update.message.reply_text(  # returning users — don't cancel active flows
+        await update.message.reply_text(
             f"👋 Welcome back!\n\n"
             f"Active trip: *{active['name']}*\n\n"
             f"/add — log an expense\n"
@@ -142,6 +155,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         reply_markup=_tz_keyboard(),
     )
     context.user_data[_ob_k(chat.id)]["bot_msg_id"] = msg.message_id
+    logger.debug("cmd_start: started onboarding for user=%s chat=%s msg=%s", user.id, chat.id, msg.message_id)
     return ONBOARD_TZ
 
 
@@ -152,8 +166,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def onboard_pick_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    chat = update.effective_chat
     iana = query.data[len("ob_tz_"):]
-    ctx = context.user_data[_ob_k(update.effective_chat.id)]
+
+    ctx = context.user_data.get(_ob_k(chat.id))
+    if ctx is None:
+        await query.answer("Session expired. Use /start to try again.", show_alert=True)
+        return ConversationHandler.END
+
     ctx["tz"] = iana
     ctx["tz_label"] = next((lbl for lbl, iname in _POPULAR if iname == iana), iana)
 
@@ -161,6 +181,7 @@ async def onboard_pick_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await set_user_timezone(db, update.effective_user.id, iana)
 
     now_str = datetime.now(ZoneInfo(iana)).strftime("%H:%M")
+    logger.debug("onboard_pick_tz: user=%s tz=%s", update.effective_user.id, iana)
 
     await query.edit_message_text(
         f"👋 *Welcome to SplitLah!*\n\n"
@@ -176,11 +197,12 @@ async def onboard_pick_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def onboard_skip_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    logger.debug("onboard_skip_tz: user=%s", update.effective_user.id)
 
     await query.edit_message_text(
-        f"👋 *Welcome to SplitLah!*\n\n"
-        f"*Step 2 of 3 — Base currency*\n"
-        f"Pick the main currency for your trip:",
+        "👋 *Welcome to SplitLah!*\n\n"
+        "*Step 2 of 3 — Base currency*\n"
+        "Pick the main currency for your trip:",
         parse_mode="Markdown",
         reply_markup=_currency_keyboard(),
     )
@@ -194,15 +216,30 @@ async def onboard_skip_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def onboard_pick_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    ctx = context.user_data[_ob_k(update.effective_chat.id)]
+    chat = update.effective_chat
+
+    ctx = context.user_data.get(_ob_k(chat.id))
+    if ctx is None:
+        await query.answer("Session expired. Use /start to try again.", show_alert=True)
+        return ConversationHandler.END
+
     ctx["currency"] = query.data[len("ob_cur_"):]
+    logger.debug("onboard_pick_currency: user=%s currency=%s", update.effective_user.id, ctx["currency"])
     return await _ask_trip_name(query, ctx)
 
 
 async def onboard_skip_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    return await _ask_trip_name(query, context.user_data[_ob_k(update.effective_chat.id)])
+    chat = update.effective_chat
+
+    ctx = context.user_data.get(_ob_k(chat.id))
+    if ctx is None:
+        await query.answer("Session expired. Use /start to try again.", show_alert=True)
+        return ConversationHandler.END
+
+    logger.debug("onboard_skip_currency: user=%s, keeping default %s", update.effective_user.id, ctx["currency"])
+    return await _ask_trip_name(query, ctx)
 
 
 async def _ask_trip_name(query, ctx: dict) -> int:
@@ -226,15 +263,25 @@ async def _ask_trip_name(query, ctx: dict) -> int:
 
 async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
+    user = update.effective_user
+    logger.debug("onboard_got_trip_name: user=%s chat=%s", user.id, chat.id)
+
     ctx = context.user_data.get(_ob_k(chat.id))
-    if not ctx:
+    if ctx is None:
         return ConversationHandler.END
 
-    # Safety guard: abort if another flow already created a trip for this chat
+    # Safety guard: abort if another flow already created a trip for this chat.
+    # This prevents a race where a second group member's /start ends up creating
+    # a trip named after whatever text they typed next.
     async with get_db() as db:
-        if await get_trips_in_chat(db, chat.id):
-            context.user_data.pop(_ob_k(chat.id), None)
-            return ConversationHandler.END
+        existing_trips = await get_trips_in_chat(db, chat.id)
+    if existing_trips:
+        logger.info(
+            "onboard_got_trip_name: aborting — trips already exist for chat=%s (race condition guard)",
+            chat.id,
+        )
+        context.user_data.pop(_ob_k(chat.id), None)
+        return ConversationHandler.END
 
     name = update.message.text.strip()
     try:
@@ -245,27 +292,23 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
     bot_msg_id = ctx.get("bot_msg_id")
 
     if not name:
-        new_id = await safe_edit(
+        ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, bot_msg_id,
             "Name can't be empty — what would you like to call it?",
             reply_markup=_cancel_kb(),
         )
-        ctx["bot_msg_id"] = new_id
         return ONBOARD_TRIP_NAME
 
     if len(name) > 100:
-        new_id = await safe_edit(
+        ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, bot_msg_id,
             "Name is too long (max 100 characters). Try again:",
             reply_markup=_cancel_kb(),
         )
-        ctx["bot_msg_id"] = new_id
         return ONBOARD_TRIP_NAME
 
     currency = ctx.get("currency", config.DEFAULT_CURRENCY)
-    creator_id = ctx.get("creator_id", update.effective_user.id)
-    user = update.effective_user
-
+    creator_id = ctx.get("creator_id", user.id)
     is_group = chat.type in ("group", "supergroup")
 
     async with get_db() as db:
@@ -296,6 +339,7 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
 
     async with get_db() as db:
         await set_active_trip_id(db, chat.id, trip_id)
+
     context.user_data.pop(_ob_k(chat.id), None)
 
     tz_line = f" · 🕐 {ctx['tz_label']}" if ctx.get("tz_label") else ""
@@ -328,6 +372,7 @@ async def onboard_skip_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     context.user_data.pop(_ob_k(update.effective_chat.id), None)
+    logger.debug("onboard_skip_trip: user=%s", update.effective_user.id)
     await query.edit_message_text(
         "✅ *Preferences saved!*\n\n"
         "Use /newtrip whenever you're ready to create a trip.\n"

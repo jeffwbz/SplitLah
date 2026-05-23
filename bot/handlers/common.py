@@ -1,5 +1,5 @@
 """
-Registration middleware and basic commands.
+Registration middleware, flow cancellation, and basic commands.
 Works in both group chats and private chats.
 """
 from __future__ import annotations
@@ -29,72 +29,38 @@ async def register_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await ensure_member(db, chat.id, user.id)
 
 
-_HELP_TEXT = (
-    "*SplitLah*\n"
-    "\n"
-    "*Trips*\n"
-    "/newtrip — Create a trip\n"
-    "/trips — Manage trips\n"
-    "\n"
-    "*Expenses*\n"
-    "/add — Log an expense\n"
-    "/history — Browse & edit expenses\n"
-    "\n"
-    "*Balances*\n"
-    "/balances — Net balance per member\n"
-    "/simplify — Minimise payments to settle all debts\n"
-    "/settle — Record a payment\n"
-    "\n"
-    "*Other*\n"
-    "/currency — Change base currency\n"
-    "/settimezone — Set your timezone\n"
-    "/help — Show all commands"
-)
-
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await register_context(update, context)
-    await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
-
-
 async def cancel_all_flows(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
-    """Pop and dismiss every active text-input flow for this (user, chat)."""
-    for key in [
+    """Cancel every active text-input flow for this (user, chat). Called at every command entry."""
+    # Keys that store a dict with a bot_msg_id field
+    dict_keys = [
         f"ob_ctx_{chat_id}",
         f"trip_ctx_{chat_id}",
         f"edit_trip_ctx_{chat_id}",
         f"expense_ctx_{chat_id}",
         f"exp_act_ctx_{chat_id}",
         f"cur_ctx_{chat_id}",
-    ]:
+    ]
+    for key in dict_keys:
         old = context.user_data.pop(key, None)
-        if old and isinstance(old, dict) and old.get("bot_msg_id"):
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id, message_id=old["bot_msg_id"], text="Cancelled."
-                )
-            except Exception:
-                pass
+        if old and isinstance(old, dict):
+            msg_id = old.get("bot_msg_id")
+            if msg_id:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id, message_id=msg_id, text="⚠️ Previous action cancelled."
+                    )
+                except Exception:
+                    pass  # message may be deleted or too old — not important
+
     # settimezone stores just a message_id int
-    stz_msg_id = context.user_data.pop(f"stz_msg_id_{chat_id}", None)
-    if stz_msg_id:
+    stz_id = context.user_data.pop(f"stz_msg_id_{chat_id}", None)
+    if stz_id:
         try:
             await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=stz_msg_id, text="Cancelled."
+                chat_id=chat_id, message_id=stz_id, text="⚠️ Previous action cancelled."
             )
         except Exception:
             pass
-
-
-async def stale_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer("This menu has expired — start a new command.", show_alert=True)
-
-
-async def silent_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Dismiss a callback query silently (no alert) while a conversation is active."""
-    if update.callback_query:
-        await update.callback_query.answer()
 
 
 async def safe_edit(
@@ -123,8 +89,10 @@ async def safe_edit(
         except BadRequest as exc:
             if "Message is not modified" in str(exc):
                 return message_id
-        except Exception:
-            pass
+            logger.debug("safe_edit: BadRequest editing msg=%s in chat=%s: %s", message_id, chat_id, exc)
+        except Exception as exc:
+            logger.debug("safe_edit: failed to edit msg=%s in chat=%s: %s", message_id, chat_id, exc)
+
     msg = await context.bot.send_message(
         chat_id=chat_id,
         text=text,
@@ -132,3 +100,53 @@ async def safe_edit(
         reply_markup=reply_markup,
     )
     return msg.message_id
+
+
+async def silent_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dismiss a callback query silently (no alert) while a conversation is active."""
+    if update.callback_query:
+        await update.callback_query.answer()
+
+
+async def stale_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catch-all for callback queries that no handler claimed — show an expiry notice."""
+    query = update.callback_query
+    await query.answer("This menu has expired — start a new command.", show_alert=True)
+
+
+_HELP_TEXT = (
+    "*SplitLah*\n"
+    "\n"
+    "*Trips*\n"
+    "/newtrip — Create a trip\n"
+    "/trips — Manage trips\n"
+    "\n"
+    "*Expenses*\n"
+    "/add — Log an expense\n"
+    "/history — Browse & edit expenses\n"
+    "\n"
+    "*Balances*\n"
+    "/balances — Net balance per member\n"
+    "/simplify — Minimise payments to settle all debts\n"
+    "/settle — Record a payment\n"
+    "\n"
+    "*Other*\n"
+    "/currency — Change base currency\n"
+    "/settimezone — Set your timezone\n"
+    "/help — Show all commands"
+)
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.debug("cmd_help: user=%s chat=%s", update.effective_user.id, update.effective_chat.id)
+    await register_context(update, context)
+    await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel any active flow and send a simple confirmation."""
+    chat = update.effective_chat
+    user = update.effective_user
+    logger.debug("cmd_cancel: user=%s chat=%s", user.id if user else None, chat.id)
+    await cancel_all_flows(context, chat.id)
+    await update.message.reply_text("Cancelled.")
