@@ -105,14 +105,30 @@ def main() -> None:
     # ------------------------------------------------------------------
     # ConversationHandlers (must come first — they are greedy)
     # ------------------------------------------------------------------
-    app.add_handler(build_start_handler())
-    app.add_handler(build_trip_handler())
-    app.add_handler(build_edit_trip_handler())
-    app.add_handler(build_expense_handler())
-    app.add_handler(build_expense_action_handler())
-    app.add_handler(build_settle_handler())
-    app.add_handler(build_currency_handler())
-    app.add_handler(build_settimezone_handler())
+    # Build as named variables so we can store references for cancel_all_flows
+    # to clear internal ConversationHandler state (_conversations) on flow cancellation.
+    _start_h = build_start_handler()
+    _trip_h = build_trip_handler()
+    _edit_trip_h = build_edit_trip_handler()
+    _expense_h = build_expense_handler()
+    _expense_act_h = build_expense_action_handler()
+    _settle_h = build_settle_handler()
+    _currency_h = build_currency_handler()
+    _settimezone_h = build_settimezone_handler()
+
+    app.bot_data["conv_handlers"] = [
+        _start_h, _trip_h, _edit_trip_h, _expense_h, _expense_act_h,
+        _settle_h, _currency_h, _settimezone_h,
+    ]
+
+    app.add_handler(_start_h)
+    app.add_handler(_trip_h)
+    app.add_handler(_edit_trip_h)
+    app.add_handler(_expense_h)
+    app.add_handler(_expense_act_h)
+    app.add_handler(_settle_h)
+    app.add_handler(_currency_h)
+    app.add_handler(_settimezone_h)
 
     # ------------------------------------------------------------------
     # Plain command handlers

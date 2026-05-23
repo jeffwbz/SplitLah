@@ -7,9 +7,8 @@ TRIP_NAME           → user types a name
 TRIP_CURRENCY       → user picks base currency (or searches)
 TRIP_CURRENCY_SEARCH → user types a currency query
 TRIP_CURRENCY_RESULTS → user picks from search results
-TRIP_MEMBERS        → toggle Telegram group members + add virtual members
-TRIP_ADD_NAME       → user types a virtual member's name
-TRIP_CONFIRM        → confirm creation
+TRIP_MEMBERS_TEXT   → user types member names (comma-separated); tap Done when finished
+TRIP_CONFIRM        → confirm creation (shows full summary)
 
 Edit trip flow
 --------------
@@ -57,13 +56,13 @@ from bot.database import (
     upsert_user,
 )
 from bot.formatters import user_display_name
-from bot.handlers.common import cancel_all_flows, register_context, safe_edit, silent_answer
+from bot.handlers.common import CONV_ENTRY_EXCL, cancel_all_flows, register_context, safe_edit, silent_answer
 
 logger = logging.getLogger(__name__)
 
-TRIP_NAME, TRIP_CURRENCY, TRIP_MEMBERS, TRIP_ADD_NAME, TRIP_CONFIRM = range(5)
-EDIT_MENU, EDIT_NAME, EDIT_ADD_VNAME, EDIT_REMOVE, EDIT_CONFIRM_CLEAR, EDIT_CONFIRM_DELETE = range(5, 11)
-TRIP_CURRENCY_SEARCH, TRIP_CURRENCY_RESULTS = range(11, 13)
+TRIP_NAME, TRIP_CURRENCY, TRIP_MEMBERS_TEXT, TRIP_CONFIRM = range(4)
+EDIT_MENU, EDIT_NAME, EDIT_ADD_VNAME, EDIT_REMOVE, EDIT_CONFIRM_CLEAR, EDIT_CONFIRM_DELETE = range(4, 10)
+TRIP_CURRENCY_SEARCH, TRIP_CURRENCY_RESULTS = range(10, 12)
 
 
 def _k(chat_id: int) -> str:
@@ -90,32 +89,11 @@ def _currency_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _members_keyboard(
-    telegram_members: list[dict],
-    selected_telegram: set[int],
-    virtual_members: list[str],
-) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-
-    for i in range(0, len(telegram_members), 2):
-        row = []
-        for m in telegram_members[i:i + 2]:
-            tick = "✅ " if m["id"] in selected_telegram else ""
-            row.append(InlineKeyboardButton(f"{tick}{user_display_name(m)}", callback_data=f"ttog_{m['id']}"))
-        rows.append(row)
-
-    # Virtual members already added — display only (no toggle)
-    for name in virtual_members:
-        rows.append([InlineKeyboardButton(f"👤 {name}", callback_data="trip_noop")])
-
-    n_total = len(selected_telegram) + len(virtual_members)
-    add_label = "➕ Add non-group member" if telegram_members else "➕ Add member"
-    rows.append([
-        InlineKeyboardButton(add_label, callback_data="trip_addname"),
-        InlineKeyboardButton(f"✔ Done ({n_total} selected)", callback_data="trip_members_done"),
+def _members_done_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✔ Done", callback_data="trip_members_done")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")],
     ])
-    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")])
-    return InlineKeyboardMarkup(rows)
 
 
 def _edit_menu_keyboard() -> InlineKeyboardMarkup:
@@ -134,6 +112,27 @@ def _edit_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
+# Members prompt helpers
+# ---------------------------------------------------------------------------
+
+def _all_member_names(ctx: dict) -> list[str]:
+    """Returns the complete ordered member name list for the trip being created."""
+    tg_names = [user_display_name(m) for m in ctx["tg_members"]]
+    return tg_names + ctx["extra_members"]
+
+
+def _members_prompt_text(ctx: dict) -> str:
+    names = _all_member_names(ctx)
+    names_str = ", ".join(names) if names else "_No members yet_"
+    prompt = f"*{ctx['name']}* · {ctx['base_currency']}\n\n👥 Going: {names_str}"
+    if ctx.get("is_group") and not ctx["extra_members"]:
+        prompt += "\n\nAll group members included. Add anyone not in this group?"
+    else:
+        prompt += "\n\nType more names _(comma-separated)_, or tap Done:"
+    return prompt
+
+
+# ---------------------------------------------------------------------------
 # Entry — /newtrip
 # ---------------------------------------------------------------------------
 
@@ -143,12 +142,23 @@ async def cmd_newtrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user = update.effective_user
     logger.debug("cmd_newtrip: user=%s chat=%s", user.id, chat.id)
 
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=user.id)
 
-    telegram_members: list[dict] = []
-    if chat.type in ("group", "supergroup"):
+    is_group = chat.type in ("group", "supergroup")
+    if is_group:
         async with get_db() as db:
-            telegram_members = await get_group_telegram_members(db, chat.id)
+            tg_members = await get_group_telegram_members(db, chat.id)
+        # Ensure creator is always in the list (they may not have sent a prior message)
+        if not any(m["id"] == user.id for m in tg_members):
+            tg_members = [{
+                "id": user.id, "username": user.username,
+                "first_name": user.first_name, "last_name": user.last_name,
+            }] + tg_members
+    else:
+        tg_members = [{
+            "id": user.id, "username": user.username,
+            "first_name": user.first_name, "last_name": user.last_name,
+        }]
 
     ctx: dict = {
         "chat_id": chat.id,
@@ -156,14 +166,14 @@ async def cmd_newtrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         "name": None,
         "base_currency": config.DEFAULT_CURRENCY,
         "bot_msg_id": None,
-        "telegram_members": telegram_members,
-        "selected_telegram": {m["id"] for m in telegram_members} | {user.id},
-        "virtual_members": [],
+        "is_group": is_group,
+        "tg_members": tg_members,
+        "extra_members": [],
     }
     context.user_data[_k(chat.id)] = ctx
 
     msg = await update.message.reply_text(
-        "*New trip*\n\nName?  _(e.g. Bali 2025, House)_",
+        "*New trip*\n\nWhat's the trip name?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]]),
     )
@@ -207,17 +217,13 @@ async def got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return TRIP_NAME
 
-    # Reject names matching any member name — including the creator themselves,
-    # who may not be in get_group_telegram_members if they haven't previously
-    # sent a message in this group.
-    user = update.effective_user
-    creator_display = user_display_name({
-        "id": user.id, "username": user.username,
-        "first_name": user.first_name, "last_name": user.last_name,
-    })
+    # Reject names matching any pre-loaded member's name (covers creator + all group members).
     name_lower = name.lower()
-    if name_lower in (creator_display.lower(), (user.first_name or "").lower()):
-        logger.warning("got_trip_name: rejected name=%r — matches creator name user=%s", name, user.id)
+    if any(
+        name_lower in (user_display_name(m).lower(), (m.get("first_name") or "").lower())
+        for m in ctx["tg_members"]
+    ):
+        logger.warning("got_trip_name: rejected name=%r — matches a member name chat=%s", name, chat.id)
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             "*New trip*\n\n⚠️ Trip names can't match a member's name. "
@@ -226,23 +232,6 @@ async def got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             reply_markup=cancel_kb,
         )
         return TRIP_NAME
-
-    if chat.type in ("group", "supergroup"):
-        async with get_db() as db:
-            group_members = await get_group_telegram_members(db, chat.id)
-        if any(
-            name_lower in (user_display_name(m).lower(), (m.get("first_name") or "").lower())
-            for m in group_members
-        ):
-            logger.warning("got_trip_name: rejected name=%r — matches a member name in chat=%s", name, chat.id)
-            ctx["bot_msg_id"] = await safe_edit(
-                context, chat.id, ctx["bot_msg_id"],
-                "*New trip*\n\n⚠️ Trip names can't match a member's name. "
-                "Try something like _Bali 2025_ or _House expenses_:",
-                parse_mode="Markdown",
-                reply_markup=cancel_kb,
-            )
-            return TRIP_NAME
 
     ctx["name"] = name
     ctx["bot_msg_id"] = await safe_edit(
@@ -373,121 +362,73 @@ async def _apply_trip_currency(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     ctx["base_currency"] = code
-    if ctx["telegram_members"]:
-        text = (
-            f"*{ctx['name']}* · {code}\n\n"
-            "👥 Group members are all pre-selected — deselect if needed, "
-            "or add someone not in the group:"
-        )
-    else:
-        text = f"*{ctx['name']}* · {code}\n\nAdd members:"
-
-    markup = _members_keyboard(ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"])
+    text = _members_prompt_text(ctx)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=_members_done_kb())
+        ctx["bot_msg_id"] = update.callback_query.message.message_id
     else:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
-            text, parse_mode="Markdown", reply_markup=markup,
+            text, parse_mode="Markdown", reply_markup=_members_done_kb(),
         )
-    return TRIP_MEMBERS
+    return TRIP_MEMBERS_TEXT
 
 
 # ---------------------------------------------------------------------------
-# Step 3a — toggle a Telegram group member
+# Step 3 — text-based member input
 # ---------------------------------------------------------------------------
 
-async def toggle_telegram_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    chat = update.effective_chat
-    ctx = context.user_data.get(_k(chat.id))
-    if ctx is None:
-        await query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
-        return ConversationHandler.END
-
-    uid = int(query.data.split("_")[1])
-    if uid == ctx["creator_id"]:
-        await query.answer("You're always included.", show_alert=True)
-        return TRIP_MEMBERS
-
-    selected: set[int] = ctx["selected_telegram"]
-    if uid in selected:
-        selected.discard(uid)
-    else:
-        selected.add(uid)
-
-    await query.edit_message_reply_markup(
-        reply_markup=_members_keyboard(ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"])
-    )
-    return TRIP_MEMBERS
-
-
-# ---------------------------------------------------------------------------
-# Step 3b — virtual member name input
-# ---------------------------------------------------------------------------
-
-async def ask_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "Name?",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]]),
-    )
-    return TRIP_ADD_NAME
-
-
-async def got_virtual_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def got_members_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
 
-    name = update.message.text.strip()
+    raw = update.message.text.strip()
     try:
         await update.message.delete()
     except Exception:
         pass
 
-    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="trip_cancel")]])
+    # Parse comma- or newline-separated names
+    names = [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
 
-    if not name:
-        ctx["bot_msg_id"] = await safe_edit(context, chat.id, ctx["bot_msg_id"], "Name?", reply_markup=cancel_kb)
-        return TRIP_ADD_NAME
+    # Build existing name set for deduplication (case-insensitive)
+    existing_lower = {user_display_name(m).lower() for m in ctx["tg_members"]}
+    existing_lower |= {n.lower() for n in ctx["extra_members"]}
 
-    if len(name) > 64:
-        ctx["bot_msg_id"] = await safe_edit(
-            context, chat.id, ctx["bot_msg_id"],
-            "Name is too long (max 64 characters). Try again:", reply_markup=cancel_kb,
-        )
-        return TRIP_ADD_NAME
+    errors: list[str] = []
+    for name in names:
+        if len(name) > 64:
+            errors.append(f"'{name[:20]}…' is too long (max 64 chars)")
+            continue
+        try:
+            float(name)
+            errors.append(f"'{name}' looks like a number — enter a name")
+            continue
+        except ValueError:
+            pass
+        if name.lower() in existing_lower:
+            continue  # silently skip duplicates
+        ctx["extra_members"].append(name)
+        existing_lower.add(name.lower())
 
-    try:
-        float(name)
-        ctx["bot_msg_id"] = await safe_edit(
-            context, chat.id, ctx["bot_msg_id"],
-            "Please enter a name, not a number. Try again:", reply_markup=cancel_kb,
-        )
-        return TRIP_ADD_NAME
-    except ValueError:
-        pass
+    if errors:
+        error_note = "\n" + "\n".join(f"⚠️ {e}" for e in errors[:3])
+    else:
+        error_note = ""
 
-    ctx["virtual_members"].append(name)
     ctx["bot_msg_id"] = await safe_edit(
         context, chat.id, ctx["bot_msg_id"],
-        f"*{ctx['name']}* · {ctx['base_currency']}\n\nAdd members:",
+        _members_prompt_text(ctx) + error_note,
         parse_mode="Markdown",
-        reply_markup=_members_keyboard(ctx["telegram_members"], ctx["selected_telegram"], ctx["virtual_members"]),
+        reply_markup=_members_done_kb(),
     )
-    return TRIP_MEMBERS
+    return TRIP_MEMBERS_TEXT
 
 
-# ---------------------------------------------------------------------------
-# Step 3c — done selecting members
-# ---------------------------------------------------------------------------
-
-async def done_trip_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def done_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     chat = update.effective_chat
@@ -496,25 +437,11 @@ async def done_trip_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
         return ConversationHandler.END
 
-    n_total = len(ctx["selected_telegram"]) + len(ctx["virtual_members"])
-    if n_total < 1:
-        await query.answer("Add at least one member.", show_alert=True)
-        return TRIP_MEMBERS
+    names_str = ", ".join(_all_member_names(ctx))
 
-    members_preview: list[str] = []
-    for uid in ctx["selected_telegram"]:
-        m = next((m for m in ctx["telegram_members"] if m["id"] == uid), None)
-        if m:
-            members_preview.append(user_display_name(m))
-        elif uid == ctx["creator_id"]:
-            members_preview.append("You")
-    for name in ctx["virtual_members"]:
-        members_preview.append(name)
-
-    preview_text = ", ".join(members_preview)
     await query.edit_message_text(
         f"*{ctx['name']}* · {ctx['base_currency']}\n"
-        f"{n_total} members: {preview_text}\n\n"
+        f"👥 {names_str}\n\n"
         "Create this trip?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
@@ -540,8 +467,6 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
         return ConversationHandler.END
 
-    user = update.effective_user
-
     async with get_db() as db:
         trip_id = await create_trip(
             db,
@@ -551,30 +476,22 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             created_by=ctx["creator_id"],
         )
 
-        for uid in ctx["selected_telegram"]:
-            telegram_user = next((m for m in ctx["telegram_members"] if m["id"] == uid), None)
-            if telegram_user:
-                dname = user_display_name(telegram_user)
-            elif uid == ctx["creator_id"]:
-                dname = user_display_name({
-                    "id": user.id,
-                    "username": user.username,
-                    "first_name": user.first_name,
-                    "last_name": user.last_name,
-                })
-            else:
-                dname = f"User#{uid}"
-            await add_trip_member(db, trip_id, display_name=dname, telegram_user_id=uid)
+        for m in ctx["tg_members"]:
+            await add_trip_member(db, trip_id, display_name=user_display_name(m), telegram_user_id=m["id"])
 
-        for name in ctx["virtual_members"]:
+        for name in ctx["extra_members"]:
             await add_trip_member(db, trip_id, display_name=name, telegram_user_id=None)
 
-    async with get_db() as db:
         await set_active_trip_id(db, ctx["chat_id"], trip_id)
 
+    all_names = _all_member_names(ctx)
+    names_str = ", ".join(all_names)
     context.user_data.pop(_k(chat.id), None)
+
     await query.edit_message_text(
-        f"✅ *{ctx['name']}* created. Use /add to log your first expense.",
+        f"✅ *{ctx['name']}* created!\n\n"
+        f"👥 Members: {names_str}\n\n"
+        "Use /add to log your first expense.",
         parse_mode="Markdown",
     )
     return ConversationHandler.END
@@ -587,12 +504,16 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_context(update, context)
     chat = update.effective_chat
-    await cancel_all_flows(context, chat.id)
-    logger.debug("cmd_trips: user=%s chat=%s", update.effective_user.id, chat.id)
+    user = update.effective_user
+    await cancel_all_flows(context, chat.id, user_id=user.id)
+    logger.debug("cmd_trips: user=%s chat=%s", user.id, chat.id)
 
     async with get_db() as db:
         active_id = await get_active_trip_id(db, chat.id)
         trips = await get_trips_in_chat(db, chat.id)
+        members_by_trip: dict[int, list[dict]] = {}
+        for t in trips:
+            members_by_trip[t["id"]] = await get_trip_members(db, t["id"])
 
     if not trips:
         await update.message.reply_text("No trips yet. Use /newtrip to create one.")
@@ -601,13 +522,21 @@ async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["*Trips*", ""]
     buttons: list[list[InlineKeyboardButton]] = []
     for t in trips:
-        marker = "✅ " if t["id"] == active_id else ""
-        prefix = "✅ " if t["id"] == active_id else "• "
-        lines.append(f"{prefix}*{t['name']}* · {t['base_currency']}")
+        marker = "✅ " if t["id"] == active_id else "• "
+        lines.append(f"{marker}*{t['name']}* · {t['base_currency']}")
+        members = members_by_trip.get(t["id"], [])
+        if members:
+            lines.append(f"   _{', '.join(m['display_name'] for m in members)}_")
+        lines.append("")
+        btn_marker = "✅ " if t["id"] == active_id else ""
         buttons.append([
-            InlineKeyboardButton(f"{marker}{t['name']}", callback_data=f"sw_trip_{t['id']}"),
+            InlineKeyboardButton(f"{btn_marker}{t['name']}", callback_data=f"sw_trip_{t['id']}"),
             InlineKeyboardButton("✏️", callback_data=f"edit_trip_{t['id']}"),
         ])
+
+    # Strip trailing blank line
+    while lines and lines[-1] == "":
+        lines.pop()
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -649,10 +578,11 @@ async def edit_trip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception:
         pass  # already answered by a ConversationHandler silent_answer fallback — safe to ignore
     chat = update.effective_chat
+    user = update.effective_user
     trip_id = int(query.data.split("_")[2])
-    logger.debug("edit_trip_entry: trip=%s chat=%s user=%s", trip_id, chat.id, update.effective_user.id)
+    logger.debug("edit_trip_entry: trip=%s chat=%s user=%s", trip_id, chat.id, user.id)
 
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=user.id)
 
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
@@ -1088,11 +1018,6 @@ async def cancel_edit_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
-async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.callback_query.answer()
-    return TRIP_MEMBERS
-
-
 # ---------------------------------------------------------------------------
 # Build handlers
 # ---------------------------------------------------------------------------
@@ -1120,15 +1045,9 @@ def build_trip_handler() -> ConversationHandler:
                 CallbackQueryHandler(trip_currency_search_again, pattern=r"^tcur_back_to_search$"),
                 CallbackQueryHandler(cancel_trip, pattern=r"^trip_cancel$"),
             ],
-            TRIP_MEMBERS: [
-                CallbackQueryHandler(toggle_telegram_member, pattern=r"^ttog_"),
-                CallbackQueryHandler(ask_virtual_name, pattern=r"^trip_addname$"),
-                CallbackQueryHandler(done_trip_members, pattern=r"^trip_members_done$"),
-                CallbackQueryHandler(noop_callback, pattern=r"^trip_noop$"),
-                CallbackQueryHandler(cancel_trip, pattern=r"^trip_cancel$"),
-            ],
-            TRIP_ADD_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_virtual_name),
+            TRIP_MEMBERS_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_members_text),
+                CallbackQueryHandler(done_members, pattern=r"^trip_members_done$"),
                 CallbackQueryHandler(cancel_trip, pattern=r"^trip_cancel$"),
             ],
             TRIP_CONFIRM: [
@@ -1139,7 +1058,7 @@ def build_trip_handler() -> ConversationHandler:
         fallbacks=[
             CommandHandler("cancel", cancel_trip),
             CommandHandler("newtrip", cmd_newtrip),
-            CallbackQueryHandler(silent_answer),
+            CallbackQueryHandler(silent_answer, pattern=CONV_ENTRY_EXCL),
         ],
         per_user=True,
         per_chat=True,
@@ -1186,7 +1105,7 @@ def build_edit_trip_handler() -> ConversationHandler:
         fallbacks=[
             CommandHandler("cancel", cancel_edit_trip),
             CallbackQueryHandler(cancel_edit_trip, pattern=r"^edit_cancel$"),
-            CallbackQueryHandler(silent_answer),
+            CallbackQueryHandler(silent_answer, pattern=CONV_ENTRY_EXCL),
         ],
         per_user=True,
         per_chat=True,

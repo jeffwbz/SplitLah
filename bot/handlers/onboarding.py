@@ -32,7 +32,7 @@ from bot.database import (
     upsert_user,
 )
 from bot.formatters import user_display_name
-from bot.handlers.common import cancel_all_flows, safe_edit, silent_answer
+from bot.handlers.common import CONV_ENTRY_EXCL, cancel_all_flows, safe_edit, silent_answer
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return ConversationHandler.END
 
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=user.id)
 
     context.user_data[_ob_k(chat.id)] = {
         "chat_id": chat.id,
@@ -464,7 +464,7 @@ def build_start_handler() -> ConversationHandler:
         },
         fallbacks=[
             CommandHandler("cancel", cancel_onboarding),
-            CallbackQueryHandler(silent_answer),
+            CallbackQueryHandler(silent_answer, pattern=CONV_ENTRY_EXCL),
         ],
         per_user=True,
         per_chat=True,

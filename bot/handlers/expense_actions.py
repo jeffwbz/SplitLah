@@ -32,7 +32,7 @@ from bot.database import (
     update_expense_description,
 )
 from bot.formatters import display_name, fmt_datetime, fmt_money, fmt_split_mode, resolve_tz
-from bot.handlers.common import safe_edit, silent_answer
+from bot.handlers.common import CONV_ENTRY_EXCL, safe_edit, silent_answer
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,12 @@ def _build_detail_text(exp: dict, base_currency: str, shares: list[dict], tz=Non
 
 async def expense_action_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    # Answer immediately to dismiss the loading spinner before any DB work.
+    try:
+        await query.answer()
+    except Exception:
+        pass  # already answered by a ConversationHandler silent_answer fallback — safe to ignore
+
     chat = update.effective_chat
     user = update.effective_user
     logger.debug("expense_action_entry: data=%r user=%s chat=%s", query.data, user.id, chat.id)
@@ -97,15 +103,10 @@ async def expense_action_entry(update: Update, context: ContextTypes.DEFAULT_TYP
     # Verify ownership: expense must belong to the requested trip, and trip must belong to this chat
     if not exp or not trip or exp["trip_id"] != trip_id or trip["chat_id"] != chat.id:
         try:
-            await query.answer("Expense not found.", show_alert=True)
+            await query.edit_message_text("Expense not found.")
         except Exception:
             pass
         return ConversationHandler.END
-
-    try:
-        await query.answer()
-    except Exception:
-        pass  # already answered by a ConversationHandler silent_answer fallback — safe to ignore
 
     context.user_data[_k(chat.id)] = {
         "expense_id": expense_id,
@@ -375,7 +376,7 @@ def build_expense_action_handler() -> ConversationHandler:
         },
         fallbacks=[
             CommandHandler("cancel", expact_cancel),
-            CallbackQueryHandler(silent_answer),
+            CallbackQueryHandler(silent_answer, pattern=CONV_ENTRY_EXCL),
         ],
         per_user=True,
         per_chat=True,

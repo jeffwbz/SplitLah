@@ -33,7 +33,7 @@ from bot.database import (
 )
 from bot.debt import simplify_debts
 from bot.formatters import fmt_balances, fmt_money, fmt_simplified
-from bot.handlers.common import cancel_all_flows, register_context, safe_edit, silent_answer
+from bot.handlers.common import CONV_ENTRY_EXCL, cancel_all_flows, register_context, safe_edit, silent_answer
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ async def simp_collapse_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_context(update, context)
     chat = update.effective_chat
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=update.effective_user.id)
     logger.debug("cmd_history: user=%s chat=%s", update.effective_user.id, chat.id)
 
     trip = await _require_trip(update, context)
@@ -485,7 +485,7 @@ async def cmd_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     chat = update.effective_chat
     logger.debug("cmd_currency: user=%s chat=%s", update.effective_user.id, chat.id)
 
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=update.effective_user.id)
     trip = await _require_trip(update, context)
     if not trip:
         return ConversationHandler.END
@@ -689,7 +689,7 @@ def build_currency_handler() -> ConversationHandler:
         },
         fallbacks=[
             CommandHandler("cancel", cancel_currency),
-            CallbackQueryHandler(silent_answer),
+            CallbackQueryHandler(silent_answer, pattern=CONV_ENTRY_EXCL),
         ],
         per_user=True,
         per_chat=True,

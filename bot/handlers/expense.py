@@ -47,7 +47,7 @@ from bot.database import (
     set_active_trip_id,
 )
 from bot.formatters import display_name, fmt_expense_summary, fmt_money
-from bot.handlers.common import cancel_all_flows, register_context, safe_edit, silent_answer
+from bot.handlers.common import CONV_ENTRY_EXCL, cancel_all_flows, register_context, safe_edit, silent_answer
 from bot.splits import calculate_shares, parse_split_values
 
 logger = logging.getLogger(__name__)
@@ -214,7 +214,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     logger.debug("cmd_add: user=%s chat=%s", user.id, chat.id)
 
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=user.id)
 
     async with get_db() as db:
         trips = await get_trips_in_chat(db, chat.id)
@@ -984,7 +984,7 @@ def build_expense_handler() -> ConversationHandler:
         fallbacks=[
             CommandHandler("cancel", cancel_expense),
             CommandHandler("add", cmd_add),
-            CallbackQueryHandler(silent_answer),
+            CallbackQueryHandler(silent_answer, pattern=CONV_ENTRY_EXCL),
         ],
         per_user=True,
         per_chat=True,

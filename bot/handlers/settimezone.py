@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 
 from bot.database import get_db, set_user_timezone
-from bot.handlers.common import cancel_all_flows, register_context, safe_edit, silent_answer
+from bot.handlers.common import CONV_ENTRY_EXCL, cancel_all_flows, register_context, safe_edit, silent_answer
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ async def cmd_settimezone(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
     logger.debug("cmd_settimezone: user=%s chat=%s", user.id, chat.id)
 
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=user.id)
 
     msg = await update.message.reply_text(
         "Choose your timezone:",
@@ -212,7 +212,7 @@ def build_settimezone_handler() -> ConversationHandler:
         },
         fallbacks=[
             CommandHandler("cancel", cancel_settimezone),
-            CallbackQueryHandler(silent_answer),
+            CallbackQueryHandler(silent_answer, pattern=CONV_ENTRY_EXCL),
         ],
         per_user=True,
         per_chat=True,

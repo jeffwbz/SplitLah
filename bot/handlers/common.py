@@ -29,8 +29,22 @@ async def register_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await ensure_member(db, chat.id, user.id)
 
 
-async def cancel_all_flows(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
-    """Cancel every active text-input flow for this (user, chat). Called at every command entry."""
+# Callbacks that are ConversationHandler entry points — must NOT be swallowed by
+# silent_answer fallbacks when another flow is active, so they can interrupt and
+# start their own flow (which calls cancel_all_flows to clean up the old one).
+CONV_ENTRY_EXCL = r"^(?!edit_trip_\d|exp_act_\d)"
+
+
+async def cancel_all_flows(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_id: int | None = None,
+) -> None:
+    """Cancel every active text-input flow for this (user, chat). Called at every command entry.
+
+    Passing user_id also clears each ConversationHandler's internal _conversations state,
+    preventing stale state from consuming the next text message the user sends.
+    """
     # Keys that store a dict with a bot_msg_id field
     dict_keys = [
         f"ob_ctx_{chat_id}",
@@ -61,6 +75,17 @@ async def cancel_all_flows(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> 
             )
         except Exception:
             pass
+
+    # Clear each ConversationHandler's internal state for this (user, chat) key.
+    # Without this, a stale handler stays in e.g. TRIP_ADD_NAME and silently consumes
+    # the next text message the user sends, even though user_data was already wiped.
+    if user_id is not None:
+        conv_key = (user_id, chat_id)
+        for handler in context.bot_data.get("conv_handlers", []):
+            try:
+                handler._conversations.pop(conv_key, None)
+            except Exception:
+                pass
 
 
 async def safe_edit(
@@ -148,5 +173,5 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat = update.effective_chat
     user = update.effective_user
     logger.debug("cmd_cancel: user=%s chat=%s", user.id if user else None, chat.id)
-    await cancel_all_flows(context, chat.id)
+    await cancel_all_flows(context, chat.id, user_id=user.id if user else None)
     await update.message.reply_text("Cancelled.")
