@@ -29,7 +29,9 @@ from bot.handlers.common import register_context
 logger = logging.getLogger(__name__)
 
 
-def _transactions_keyboard(transactions, member_map, base_currency, trip_id) -> InlineKeyboardMarkup:
+def _transactions_keyboard(
+    transactions: list, member_map: dict, base_currency: str, trip_id: int
+) -> InlineKeyboardMarkup:
     buttons = []
     for from_id, to_id, amount in transactions:
         frm = display_name(member_map[from_id])
@@ -49,6 +51,8 @@ def _transactions_keyboard(transactions, member_map, base_currency, trip_id) -> 
 async def cmd_settle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_context(update, context)
     chat = update.effective_chat
+    user = update.effective_user
+    logger.debug("cmd_settle: user=%s chat=%s", user.id, chat.id)
 
     trip = None
     async with get_db() as db:
@@ -69,8 +73,13 @@ async def cmd_settle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             async with get_db() as db:
                 await set_active_trip_id(db, chat.id, trip["id"])
         else:
-            buttons = [[InlineKeyboardButton(t["name"], callback_data=f"sw_trip_{t['id']}")] for t in trips]
-            await update.message.reply_text("Select a trip:", reply_markup=InlineKeyboardMarkup(buttons))
+            buttons = [
+                [InlineKeyboardButton(t["name"], callback_data=f"sw_trip_{t['id']}")]
+                for t in trips
+            ]
+            await update.message.reply_text(
+                "Select a trip:", reply_markup=InlineKeyboardMarkup(buttons)
+            )
             return
 
     async with get_db() as db:
@@ -104,6 +113,7 @@ async def stl_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     parts = query.data.split("_")
     from_id, to_id, trip_id = int(parts[1]), int(parts[2]), int(parts[3])
+    logger.debug("stl_pick_callback: from=%s to=%s trip=%s", from_id, to_id, trip_id)
 
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
@@ -171,6 +181,7 @@ async def stl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     parts = query.data.split("_")
     from_id, to_id, trip_id = int(parts[1]), int(parts[2]), int(parts[3])
+    logger.debug("stl_confirm_callback: from=%s to=%s trip=%s", from_id, to_id, trip_id)
 
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
@@ -192,15 +203,20 @@ async def stl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     frm = display_name(member_map[from_id])
     to = display_name(member_map[to_id])
 
-    async with get_db() as db:
-        await create_settlement(
-            db,
-            trip_id=trip_id,
-            from_member_id=from_id,
-            to_member_id=to_id,
-            amount=amount,
-            currency=trip["base_currency"],
-        )
+    try:
+        async with get_db() as db:
+            await create_settlement(
+                db,
+                trip_id=trip_id,
+                from_member_id=from_id,
+                to_member_id=to_id,
+                amount=amount,
+                currency=trip["base_currency"],
+            )
+    except Exception as exc:
+        logger.exception("stl_confirm_callback: DB error trip=%s: %s", trip_id, exc)
+        await query.edit_message_text("Something went wrong recording the settlement. Please try again.")
+        raise ApplicationHandlerStop
 
     await query.edit_message_text(
         f"✅ *{frm}* paid *{to}* {fmt_money(amount, trip['base_currency'])}.",
@@ -214,6 +230,7 @@ async def stl_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     trip_id = int(query.data.split("_")[1])
+    logger.debug("stl_back_callback: trip=%s", trip_id)
 
     async with get_db() as db:
         trip = await get_trip(db, trip_id)
@@ -243,7 +260,7 @@ async def stl_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def stl_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """stlcnl — cancel settle flow."""
+    """stlcnl — dismiss the settle UI."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("Cancelled.")

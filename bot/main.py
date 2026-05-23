@@ -14,6 +14,7 @@ if sys.platform == "win32":
     except ImportError:
         pass
 
+import telegram
 from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
@@ -36,10 +37,10 @@ from bot.handlers.balance import (
     simp_expand_all_callback,
     simp_more_callback,
 )
-from bot.handlers.common import cmd_help, register_context, stale_callback
-from bot.handlers.onboarding import build_start_handler, ob_done_callback
+from bot.handlers.common import cmd_cancel, cmd_help, register_context, stale_callback
 from bot.handlers.expense import build_expense_handler
 from bot.handlers.expense_actions import build_expense_action_handler
+from bot.handlers.onboarding import build_start_handler, ob_done_callback
 from bot.handlers.settle import (
     build_settle_handler,
     stl_back_callback,
@@ -58,6 +59,11 @@ logger = logging.getLogger(__name__)
 
 
 async def _post_init(application: Application) -> None:
+    logger.info(
+        "Starting SplitLah — Python %s, python-telegram-bot %s",
+        sys.version.split()[0],
+        telegram.__version__,
+    )
     await init_db()
     await application.bot.set_my_commands([
         BotCommand("newtrip", "Create a new trip"),
@@ -96,7 +102,9 @@ def main() -> None:
         .build()
     )
 
-    # Conversation handlers first (they're greedy)
+    # ------------------------------------------------------------------
+    # ConversationHandlers (must come first — they are greedy)
+    # ------------------------------------------------------------------
     app.add_handler(build_start_handler())
     app.add_handler(build_trip_handler())
     app.add_handler(build_edit_trip_handler())
@@ -106,30 +114,43 @@ def main() -> None:
     app.add_handler(build_currency_handler())
     app.add_handler(build_settimezone_handler())
 
+    # ------------------------------------------------------------------
     # Plain command handlers
+    # ------------------------------------------------------------------
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("trips", cmd_trips))
     app.add_handler(CommandHandler("balances", cmd_balances))
     app.add_handler(CommandHandler("simplify", cmd_simplify))
     app.add_handler(CommandHandler("history", cmd_history))
 
-    # sw_trip_ must run before any conversation's silent_answer fallback can swallow it
+    # ------------------------------------------------------------------
+    # group=-1 callbacks: run before ConversationHandler silent_answer fallbacks
+    # can swallow them when another conversation is active
+    # ------------------------------------------------------------------
+
+    # Trip switching and onboarding completion
     app.add_handler(CallbackQueryHandler(switch_trip_callback, pattern=r"^sw_trip_\d+$"), group=-1)
     app.add_handler(CallbackQueryHandler(ob_done_callback, pattern=r"^ob_done$"), group=-1)
 
-    # Non-conversation callback handlers — registered in group=-1 so ConversationHandler
-    # fallbacks (silent_answer) can't swallow them when another conversation is active
+    # History navigation and nudge
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern=r"^hist_\d+_\d+$"), group=-1)
     app.add_handler(CallbackQueryHandler(nudge_callback, pattern=r"^nudge_\d+_\d+$"), group=-1)
+
+    # Simplify expand/collapse
     app.add_handler(CallbackQueryHandler(simp_more_callback, pattern=r"^simp_more_\d+_\d+$"), group=-1)
     app.add_handler(CallbackQueryHandler(simp_expand_all_callback, pattern=r"^simp_expand_\d+$"), group=-1)
     app.add_handler(CallbackQueryHandler(simp_collapse_callback, pattern=r"^simp_collapse_\d+$"), group=-1)
+
+    # Settle flow (stateless — all state in callback_data)
     app.add_handler(CallbackQueryHandler(stl_pick_callback, pattern=r"^stl_\d+_\d+_\d+$"), group=-1)
     app.add_handler(CallbackQueryHandler(stl_confirm_callback, pattern=r"^sconf_\d+_\d+_\d+$"), group=-1)
     app.add_handler(CallbackQueryHandler(stl_back_callback, pattern=r"^stlback_\d+$"), group=-1)
     app.add_handler(CallbackQueryHandler(stl_cancel_callback, pattern=r"^stlcnl$"), group=-1)
 
-    # Auto-register users who send any message (groups only)
+    # ------------------------------------------------------------------
+    # Auto-register users who send messages in groups
+    # ------------------------------------------------------------------
     app.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
@@ -137,7 +158,9 @@ def main() -> None:
         )
     )
 
-    # Catch-all for stale / orphaned callbacks
+    # ------------------------------------------------------------------
+    # Catch-all: dismiss stale / orphaned callback queries
+    # ------------------------------------------------------------------
     app.add_handler(CallbackQueryHandler(stale_callback))
 
     logger.info("Starting polling…")
