@@ -270,19 +270,6 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
     if ctx is None:
         return ConversationHandler.END
 
-    # Safety guard: abort if another flow already created a trip for this chat.
-    # This prevents a race where a second group member's /start ends up creating
-    # a trip named after whatever text they typed next.
-    async with get_db() as db:
-        existing_trips = await get_trips_in_chat(db, chat.id)
-    if existing_trips:
-        logger.info(
-            "onboard_got_trip_name: aborting — trips already exist for chat=%s (race condition guard)",
-            chat.id,
-        )
-        context.user_data.pop(_ob_k(chat.id), None)
-        return ConversationHandler.END
-
     name = update.message.text.strip()
     try:
         await update.message.delete()
@@ -307,12 +294,43 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ONBOARD_TRIP_NAME
 
-    # Reject names that match a group member's display name or first name.
-    # This prevents the recurring bug where a user types their own name as the trip name.
-    if chat.type in ("group", "supergroup"):
+    currency = ctx.get("currency", config.DEFAULT_CURRENCY)
+    creator_id = ctx.get("creator_id", user.id)
+    is_group = chat.type in ("group", "supergroup")
+
+    # Build the creator's display name so we can validate and reuse it below.
+    creator_display = user_display_name({
+        "id": user.id,
+        "username": user.username,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+    })
+
+    # Reject trip names that collide with member names — this is the root cause
+    # of the recurring "name typed as trip name" bug.
+    name_lower = name.lower()
+
+    # Always check the creator directly (they may not be in get_group_telegram_members
+    # yet if they haven't sent a prior message in this group).
+    if name_lower in (creator_display.lower(), (user.first_name or "").lower()):
+        logger.warning(
+            "onboard_got_trip_name: rejected name=%r — matches creator name in chat=%s user=%s",
+            name, chat.id, user.id,
+        )
+        ctx["bot_msg_id"] = await safe_edit(
+            context, chat.id, bot_msg_id,
+            "⚠️ Trip names can't match a member's name. "
+            "Try something like _Bali 2025_ or _House expenses_:",
+            parse_mode="Markdown",
+            reply_markup=_cancel_kb(),
+        )
+        return ONBOARD_TRIP_NAME
+
+    # Fetch group members once — used for both validation and trip-member creation below.
+    group_members: list[dict] = []
+    if is_group:
         async with get_db() as db:
             group_members = await get_group_telegram_members(db, chat.id)
-        name_lower = name.lower()
         if any(
             name_lower in (user_display_name(m).lower(), (m.get("first_name") or "").lower())
             for m in group_members
@@ -330,11 +348,19 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return ONBOARD_TRIP_NAME
 
-    currency = ctx.get("currency", config.DEFAULT_CURRENCY)
-    creator_id = ctx.get("creator_id", user.id)
-    is_group = chat.type in ("group", "supergroup")
-
+    # Single transaction: existence check + create + members + set active.
+    # Keeps the TOCTOU window as small as possible.
     async with get_db() as db:
+        existing_trips = await get_trips_in_chat(db, chat.id)
+        if existing_trips:
+            # Another /start completed concurrently — abort silently.
+            logger.info(
+                "onboard_got_trip_name: aborting — trips already exist for chat=%s (race guard)",
+                chat.id,
+            )
+            context.user_data.pop(_ob_k(chat.id), None)
+            return ConversationHandler.END
+
         trip_id = await create_trip(
             db,
             name=name,
@@ -342,25 +368,16 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
             base_currency=currency,
             created_by=creator_id,
         )
-        display = user_display_name({
-            "id": user.id,
-            "username": user.username,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-        })
-        await add_trip_member(db, trip_id, display_name=display, telegram_user_id=creator_id)
+        await add_trip_member(db, trip_id, display_name=creator_display, telegram_user_id=creator_id)
 
-        if is_group:
-            group_members = await get_group_telegram_members(db, chat.id)
-            for m in group_members:
-                if m["id"] != creator_id:
-                    await add_trip_member(
-                        db, trip_id,
-                        display_name=user_display_name(m),
-                        telegram_user_id=m["id"],
-                    )
+        for m in group_members:
+            if m["id"] != creator_id:
+                await add_trip_member(
+                    db, trip_id,
+                    display_name=user_display_name(m),
+                    telegram_user_id=m["id"],
+                )
 
-    async with get_db() as db:
         await set_active_trip_id(db, chat.id, trip_id)
 
     context.user_data.pop(_ob_k(chat.id), None)

@@ -207,11 +207,29 @@ async def got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return TRIP_NAME
 
-    # Reject names matching a group member's display name or first name.
+    # Reject names matching any member name — including the creator themselves,
+    # who may not be in get_group_telegram_members if they haven't previously
+    # sent a message in this group.
+    user = update.effective_user
+    creator_display = user_display_name({
+        "id": user.id, "username": user.username,
+        "first_name": user.first_name, "last_name": user.last_name,
+    })
+    name_lower = name.lower()
+    if name_lower in (creator_display.lower(), (user.first_name or "").lower()):
+        logger.warning("got_trip_name: rejected name=%r — matches creator name user=%s", name, user.id)
+        ctx["bot_msg_id"] = await safe_edit(
+            context, chat.id, ctx["bot_msg_id"],
+            "*New trip*\n\n⚠️ Trip names can't match a member's name. "
+            "Try something like _Bali 2025_ or _House expenses_:",
+            parse_mode="Markdown",
+            reply_markup=cancel_kb,
+        )
+        return TRIP_NAME
+
     if chat.type in ("group", "supergroup"):
         async with get_db() as db:
             group_members = await get_group_telegram_members(db, chat.id)
-        name_lower = name.lower()
         if any(
             name_lower in (user_display_name(m).lower(), (m.get("first_name") or "").lower())
             for m in group_members

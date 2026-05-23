@@ -54,6 +54,7 @@ def calculate_shares(
 
 def parse_split_values(text: str, n: int) -> list[float]:
     """Parse space- or comma-separated numbers from user input."""
+    import math
     parts = text.replace(",", " ").split()
     if len(parts) != n:
         raise ValueError(f"Expected {n} values, got {len(parts)}")
@@ -61,6 +62,8 @@ def parse_split_values(text: str, n: int) -> list[float]:
         values = [float(p) for p in parts]
     except ValueError:
         raise ValueError("All values must be numbers")
+    if any(not math.isfinite(v) for v in values):
+        raise ValueError("All values must be finite numbers")
     if any(v < 0 for v in values):
         raise ValueError("Values must be positive")
     return values

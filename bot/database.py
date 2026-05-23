@@ -138,8 +138,9 @@ async def init_db() -> None:
 
         # One-time cleanup: delete trips produced by the name-corruption bug.
         # Pattern: trip name exactly matches the creator's display_name in trip_members.
-        # We delete these regardless of whether they have expenses — the trip was
-        # created by accident (a user typed their own name as the trip name).
+        # Restricted to GROUP chats (chat_id < 0) — private chats have positive chat_id
+        # equal to the user's Telegram ID, so a user legitimately naming a private trip
+        # after themselves would be incorrectly deleted without this guard.
         try:
             result = await conn.execute(text("""
                 DELETE FROM trips
@@ -150,6 +151,7 @@ async def init_db() -> None:
                       ON tm.trip_id = t.id
                      AND lower(tm.display_name) = lower(t.name)
                      AND tm.telegram_user_id = t.created_by
+                    WHERE t.chat_id < 0
                 )
             """))
             deleted = result.rowcount if result.rowcount is not None else 0
@@ -282,13 +284,20 @@ async def create_trip(
     base_currency: str,
     created_by: int,
 ) -> int:
+    if not name or not name.strip():
+        raise ValueError(f"create_trip: name must not be empty (chat={chat_id})")
+    if chat_id == 0:
+        raise ValueError("create_trip: chat_id must not be zero")
+    if created_by <= 0:
+        raise ValueError(f"create_trip: created_by must be a positive user ID, got {created_by!r}")
     result = await session.execute(
         insert(t_trips).values(
             name=name, chat_id=chat_id, base_currency=base_currency, created_by=created_by
         )
     )
     trip_id: int = result.inserted_primary_key[0]
-    logger.info("create_trip: name=%r chat=%s currency=%s → id=%s", name, chat_id, base_currency, trip_id)
+    logger.info("create_trip: name=%r chat=%s currency=%s created_by=%s → id=%s",
+                name, chat_id, base_currency, created_by, trip_id)
     return trip_id
 
 
@@ -696,7 +705,7 @@ async def set_active_trip_id(session: AsyncSession, chat_id: int, trip_id: int |
         await session.execute(
             update(t_chat_settings).where(t_chat_settings.c.chat_id == chat_id).values(active_trip_id=trip_id)
         )
-    logger.debug("set_active_trip_id: chat=%s trip=%s", chat_id, trip_id)
+    logger.info("set_active_trip_id: chat=%s trip=%s", chat_id, trip_id)
 
 
 async def get_member_expense_count(session: AsyncSession, member_id: int) -> int:
