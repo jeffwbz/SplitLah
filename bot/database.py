@@ -137,8 +137,9 @@ async def init_db() -> None:
             pass  # column already exists — expected on all non-fresh deploys
 
         # One-time cleanup: delete trips produced by the name-corruption bug.
-        # Pattern: trip name exactly matches a member's display_name in that same trip,
-        # AND the trip has no expenses (so it's safe to remove).
+        # Pattern: trip name exactly matches the creator's display_name in trip_members.
+        # We delete these regardless of whether they have expenses — the trip was
+        # created by accident (a user typed their own name as the trip name).
         try:
             result = await conn.execute(text("""
                 DELETE FROM trips
@@ -148,29 +149,34 @@ async def init_db() -> None:
                     JOIN trip_members tm
                       ON tm.trip_id = t.id
                      AND lower(tm.display_name) = lower(t.name)
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM expenses e WHERE e.trip_id = t.id
-                    )
+                     AND tm.telegram_user_id = t.created_by
                 )
             """))
             deleted = result.rowcount if result.rowcount is not None else 0
             if deleted:
-                logger.info("init_db: removed %d corrupted empty trip(s) (name = member display_name)", deleted)
+                logger.info("init_db: removed %d corrupted trip(s) where name = creator display_name", deleted)
         except Exception as exc:
             logger.warning("init_db: corrupted-trip cleanup failed: %s", exc)
 
-        # Reset any chat_settings pointers that now reference a deleted trip.
+        # Repair chat_settings.active_trip_id after deletions.
+        # If the active trip was deleted, point to the most recent remaining trip
+        # so the chat stays usable (rather than leaving it NULL).
         try:
             await conn.execute(text("""
                 UPDATE chat_settings
-                SET active_trip_id = NULL
+                SET active_trip_id = (
+                    SELECT t.id FROM trips t
+                    WHERE t.chat_id = chat_settings.chat_id
+                    ORDER BY t.created_at DESC
+                    LIMIT 1
+                )
                 WHERE active_trip_id IS NOT NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM trips WHERE id = chat_settings.active_trip_id
                   )
             """))
         except Exception as exc:
-            logger.warning("init_db: chat_settings cleanup failed: %s", exc)
+            logger.warning("init_db: chat_settings repair failed: %s", exc)
 
     logger.info("init_db: done")
 
@@ -288,7 +294,11 @@ async def create_trip(
 
 async def get_trip(session: AsyncSession, trip_id: int) -> dict | None:
     row = (await session.execute(select(t_trips).where(t_trips.c.id == trip_id))).mappings().fetchone()
-    return dict(row) if row else None
+    result = dict(row) if row else None
+    logger.debug("get_trip: id=%s → name=%r chat=%s", trip_id,
+                 result["name"] if result else None,
+                 result["chat_id"] if result else None)
+    return result
 
 
 async def get_trips_in_chat(session: AsyncSession, chat_id: int) -> list[dict]:
@@ -297,7 +307,10 @@ async def get_trips_in_chat(session: AsyncSession, chat_id: int) -> list[dict]:
             select(t_trips).where(t_trips.c.chat_id == chat_id).order_by(t_trips.c.created_at.desc())
         )
     ).mappings().fetchall()
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    logger.debug("get_trips_in_chat: chat=%s → %d trips: %s",
+                 chat_id, len(result), [(t["id"], t["name"]) for t in result])
+    return result
 
 
 async def set_trip_currency(session: AsyncSession, trip_id: int, currency: str) -> None:

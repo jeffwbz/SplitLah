@@ -307,6 +307,29 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ONBOARD_TRIP_NAME
 
+    # Reject names that match a group member's display name or first name.
+    # This prevents the recurring bug where a user types their own name as the trip name.
+    if chat.type in ("group", "supergroup"):
+        async with get_db() as db:
+            group_members = await get_group_telegram_members(db, chat.id)
+        name_lower = name.lower()
+        if any(
+            name_lower in (user_display_name(m).lower(), (m.get("first_name") or "").lower())
+            for m in group_members
+        ):
+            logger.warning(
+                "onboard_got_trip_name: rejected name=%r — matches a member name in chat=%s",
+                name, chat.id,
+            )
+            ctx["bot_msg_id"] = await safe_edit(
+                context, chat.id, bot_msg_id,
+                "⚠️ Trip names can't match a member's name. "
+                "Try something like _Bali 2025_ or _House expenses_:",
+                parse_mode="Markdown",
+                reply_markup=_cancel_kb(),
+            )
+            return ONBOARD_TRIP_NAME
+
     currency = ctx.get("currency", config.DEFAULT_CURRENCY)
     creator_id = ctx.get("creator_id", user.id)
     is_group = chat.type in ("group", "supergroup")

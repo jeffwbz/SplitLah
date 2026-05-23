@@ -207,6 +207,25 @@ async def got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return TRIP_NAME
 
+    # Reject names matching a group member's display name or first name.
+    if chat.type in ("group", "supergroup"):
+        async with get_db() as db:
+            group_members = await get_group_telegram_members(db, chat.id)
+        name_lower = name.lower()
+        if any(
+            name_lower in (user_display_name(m).lower(), (m.get("first_name") or "").lower())
+            for m in group_members
+        ):
+            logger.warning("got_trip_name: rejected name=%r — matches a member name in chat=%s", name, chat.id)
+            ctx["bot_msg_id"] = await safe_edit(
+                context, chat.id, ctx["bot_msg_id"],
+                "*New trip*\n\n⚠️ Trip names can't match a member's name. "
+                "Try something like _Bali 2025_ or _House expenses_:",
+                parse_mode="Markdown",
+                reply_markup=cancel_kb,
+            )
+            return TRIP_NAME
+
     ctx["name"] = name
     ctx["bot_msg_id"] = await safe_edit(
         context, chat.id, ctx["bot_msg_id"],
@@ -720,6 +739,20 @@ async def edit_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
             f"New name for *{ctx['trip_name']}*:\n\n_Name is too long (max 100 characters)._",
+            parse_mode="Markdown",
+            reply_markup=cancel_kb,
+        )
+        return EDIT_NAME
+
+    # Reject names matching any trip member's display name.
+    async with get_db() as db:
+        trip_members = await get_trip_members(db, ctx["trip_id"])
+    if any(name.lower() == m["display_name"].lower() for m in trip_members):
+        logger.warning("edit_got_name: rejected name=%r — matches a member name in trip=%s", name, ctx["trip_id"])
+        ctx["bot_msg_id"] = await safe_edit(
+            context, chat.id, ctx["bot_msg_id"],
+            f"New name for *{ctx['trip_name']}*:\n\n"
+            "⚠️ Trip names can't match a member's name. Try a different name:",
             parse_mode="Markdown",
             reply_markup=cancel_kb,
         )
