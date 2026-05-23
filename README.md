@@ -112,7 +112,7 @@ bot/
 ├── splits.py            Share calculation for all four split modes
 ├── formatters.py        Message formatting (balances, simplify, expense summary, history)
 └── handlers/
-    ├── common.py         /help, member registration middleware, shared utilities
+    ├── common.py         /help, /cancel, member registration middleware, shared utilities
     ├── onboarding.py     /start — first-time setup (timezone → currency → trip name)
     ├── trip.py           /newtrip, /trips, trip editing
     ├── expense.py        /add — 9-state guided conversation
