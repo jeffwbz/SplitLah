@@ -317,6 +317,7 @@ async def simp_collapse_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_context(update, context)
     chat = update.effective_chat
+    await cancel_all_flows(context, chat.id)
     logger.debug("cmd_history: user=%s chat=%s", update.effective_user.id, chat.id)
 
     trip = await _require_trip(update, context)

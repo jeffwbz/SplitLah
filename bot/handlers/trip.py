@@ -569,6 +569,7 @@ async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cmd_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_context(update, context)
     chat = update.effective_chat
+    await cancel_all_flows(context, chat.id)
     logger.debug("cmd_trips: user=%s chat=%s", update.effective_user.id, chat.id)
 
     async with get_db() as db:
@@ -625,7 +626,10 @@ async def switch_trip_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def edit_trip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass  # already answered by a ConversationHandler silent_answer fallback — safe to ignore
     chat = update.effective_chat
     trip_id = int(query.data.split("_")[2])
     logger.debug("edit_trip_entry: trip=%s chat=%s user=%s", trip_id, chat.id, update.effective_user.id)

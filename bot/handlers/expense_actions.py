@@ -96,10 +96,16 @@ async def expense_action_entry(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Verify ownership: expense must belong to the requested trip, and trip must belong to this chat
     if not exp or not trip or exp["trip_id"] != trip_id or trip["chat_id"] != chat.id:
-        await query.answer("Expense not found.", show_alert=True)
+        try:
+            await query.answer("Expense not found.", show_alert=True)
+        except Exception:
+            pass
         return ConversationHandler.END
 
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass  # already answered by a ConversationHandler silent_answer fallback — safe to ignore
 
     context.user_data[_k(chat.id)] = {
         "expense_id": expense_id,
