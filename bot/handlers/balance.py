@@ -671,6 +671,8 @@ async def cancel_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def build_currency_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CommandHandler("currency", cmd_currency)],
+        name="currency",
+        persistent=True,
         states={
             CURRENCY_PICK: [
                 CallbackQueryHandler(set_currency_callback, pattern=r"^setcur_\d+_[A-Z]+$"),

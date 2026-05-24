@@ -21,6 +21,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
+    PicklePersistence,
+    PersistenceInput,
     filters,
 )
 
@@ -95,9 +97,14 @@ async def _post_init(application: Application) -> None:
 
 
 def main() -> None:
+    persistence = PicklePersistence(
+        filepath="bot_data.pkl",
+        store_data=PersistenceInput(user_data=True, bot_data=False, chat_data=False, callback_data=False),
+    )
     app = (
         Application.builder()
         .token(BOT_TOKEN)
+        .persistence(persistence)
         .post_init(_post_init)
         .build()
     )

@@ -198,6 +198,8 @@ async def cancel_settimezone(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def build_settimezone_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CommandHandler("settimezone", cmd_settimezone)],
+        name="settimezone",
+        persistent=True,
         states={
             TZ_PICK: [
                 CallbackQueryHandler(pick_popular_tz, pattern=r"^tz_"),

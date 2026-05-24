@@ -398,12 +398,12 @@ async def got_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def got_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     token = query.data.split("_", 1)[1]
     if token == "other":
@@ -498,19 +498,21 @@ async def _resolve_currency(
 
 async def got_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
 
-    ctx["paid_by_member"] = int(query.data.split("_")[1])
+    member_id = int(query.data.split("_")[1])
     member_map = {m["id"]: m for m in ctx["members"]}
-    payer = member_map.get(ctx["paid_by_member"])
+    payer = member_map.get(member_id)
     if payer is None:
         await query.answer("Member not found. Please try again.", show_alert=True)
         return PAYER
+
+    await query.answer()
+    ctx["paid_by_member"] = member_id
 
     await query.edit_message_text(
         f"Paid by *{display_name(payer)}*\n\nHow to split?",
@@ -526,12 +528,12 @@ async def got_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def got_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     ctx["split_mode"] = query.data.split("_", 1)[1]
     ctx["selected_participants"] = {m["id"] for m in ctx["members"]}
@@ -556,12 +558,12 @@ async def got_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def toggle_participant(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     uid = int(query.data.split("_")[1])
     sel: set[int] = ctx["selected_participants"]
@@ -578,16 +580,16 @@ async def toggle_participant(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def done_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
-
     if not ctx["selected_participants"]:
         await query.answer("Select at least one person.", show_alert=True)
         return PARTICIPANTS
+
+    await query.answer()
 
     participants = [m["id"] for m in ctx["members"] if m["id"] in ctx["selected_participants"]]
     ctx["participants"] = participants
@@ -660,12 +662,12 @@ async def got_split_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     user = update.effective_user
     try:
@@ -718,12 +720,12 @@ async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def _back_to_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back from AMOUNT → re-show description prompt."""
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
     curr = ctx.get("description") or ""
     hint = f"\n_currently: {curr}_" if curr else ""
     await query.edit_message_text(
@@ -737,12 +739,12 @@ async def _back_to_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def _back_to_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back from CURRENCY or CURRENCY_TXT → re-show amount prompt."""
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
     curr = ctx.get("amount")
     hint = f" _({curr:.2f})_" if curr else ""
     await query.edit_message_text(
@@ -756,12 +758,12 @@ async def _back_to_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def _back_to_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back from PAYER → re-show currency keyboard."""
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
     await query.edit_message_text(
         f"*{ctx['amount']:.2f}* — currency?",
         parse_mode="Markdown",
@@ -773,12 +775,12 @@ async def _back_to_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def _back_to_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back from SPLIT_MODE → re-show payer keyboard."""
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
     currency = ctx.get("currency", "")
     note = ""
     if currency and currency != ctx["base_currency"] and ctx.get("amount_base"):
@@ -798,12 +800,12 @@ async def _back_to_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def _back_to_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back from PARTICIPANTS → re-show split mode keyboard."""
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
     member_map = {m["id"]: m for m in ctx["members"]}
     payer_id = ctx.get("paid_by_member")
     payer = member_map.get(payer_id) or ctx["members"][0]
@@ -818,12 +820,12 @@ async def _back_to_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def _back_to_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back from SPLIT_VALS or CONFIRM (equal) → re-show participant selector."""
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
     labels = {
         "equal": "Equal split",
         "ratio": "Ratio split",
@@ -841,12 +843,12 @@ async def _back_to_participants(update: Update, context: ContextTypes.DEFAULT_TY
 async def _back_to_split_vals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back from CONFIRM (non-equal) → re-show split value prompt."""
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /add to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     mode_prompts = {
         "ratio": "_Ratios, space-separated  (e.g._ `2 1 1`_)_",
@@ -930,6 +932,8 @@ def build_expense_handler() -> ConversationHandler:
             CommandHandler("add", cmd_add),
             CommandHandler("newexpense", cmd_add),
         ],
+        name="expense",
+        persistent=True,
         states={
             TRIP_SELECT: [
                 CallbackQueryHandler(select_trip, pattern=r"^seltrip_"),

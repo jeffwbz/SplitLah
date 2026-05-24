@@ -154,12 +154,12 @@ async def expact_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def expact_editdesc_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if not ctx:
         await query.answer("Session expired. Use /history to browse expenses.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     async with get_db() as db:
         exp = await get_expense_by_id(db, ctx["expense_id"])
@@ -175,12 +175,12 @@ async def expact_editdesc_entry(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def expact_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if not ctx:
         await query.answer("Session expired. Use /history to browse expenses.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     async with get_db() as db:
         exp = await get_expense_by_id(db, ctx["expense_id"])
@@ -359,6 +359,8 @@ def build_expense_action_handler() -> ConversationHandler:
         entry_points=[
             CallbackQueryHandler(expense_action_entry, pattern=r"^exp_act_\d+_\d+_\d+$"),
         ],
+        name="expense_action",
+        persistent=True,
         states={
             EXP_ACT: [
                 CallbackQueryHandler(expact_editdesc_entry, pattern=r"^expact_editdesc$"),

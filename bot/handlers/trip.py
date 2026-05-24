@@ -248,9 +248,7 @@ async def got_trip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ---------------------------------------------------------------------------
 
 async def got_trip_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    code = query.data.split("_", 1)[1]
+    code = update.callback_query.data.split("_", 1)[1]
     return await _apply_trip_currency(update, context, code)
 
 
@@ -270,12 +268,12 @@ async def got_trip_currency_other(update: Update, context: ContextTypes.DEFAULT_
 
 async def trip_currency_search_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
     await query.edit_message_text(
         f"*{ctx['name']}*\n\nBase currency?",
         parse_mode="Markdown",
@@ -331,9 +329,7 @@ async def got_trip_currency_search(update: Update, context: ContextTypes.DEFAULT
 
 
 async def got_trip_currency_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    _, code = query.data.split("_", 1)  # tcursel_TWD
+    _, code = update.callback_query.data.split("_", 1)  # tcursel_TWD
     return await _apply_trip_currency(update, context, code)
 
 
@@ -360,6 +356,13 @@ async def _apply_trip_currency(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await update.message.reply_text("Session expired. Use /newtrip to start again.")
         return ConversationHandler.END
+
+    # Answer the query here so callers don't need to (avoids double-answer when ctx is None).
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
 
     ctx["base_currency"] = code
     text = _members_prompt_text(ctx)
@@ -430,12 +433,12 @@ async def got_members_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def done_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     names_str = ", ".join(_all_member_names(ctx))
 
@@ -460,12 +463,12 @@ async def done_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def confirm_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /newtrip to start again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     async with get_db() as db:
         trip_id = await create_trip(
@@ -610,14 +613,14 @@ async def edit_trip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ---------------------------------------------------------------------------
 
 async def _show_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *, send: bool = False) -> int:
-    if update.callback_query:
-        await update.callback_query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
         if update.callback_query:
-            await update.callback_query.answer("Session expired.", show_alert=True)
+            await update.callback_query.answer("Session expired. Tap ✏️ to reopen.", show_alert=True)
         return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
 
     text = f"*{ctx['trip_name']}*"
     if send:
@@ -649,12 +652,12 @@ async def _show_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
 
 async def edit_menu_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
-        await query.answer("Session expired.", show_alert=True)
+        await query.answer("Session expired. Tap ✏️ to reopen.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     await query.edit_message_text(
         f"New name for *{ctx['trip_name']}*:",
@@ -725,10 +728,10 @@ async def edit_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def edit_menu_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     if context.user_data.get(_ek(update.effective_chat.id)) is None:
-        await query.answer("Session expired.", show_alert=True)
+        await query.answer("Session expired. Tap ✏️ to reopen.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     await query.edit_message_text(
         "Enter their name:\n\n_For someone who isn't in this group chat._",
@@ -805,12 +808,12 @@ async def edit_add_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def edit_menu_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
-        await query.answer("Session expired.", show_alert=True)
+        await query.answer("Session expired. Tap ✏️ to reopen.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     async with get_db() as db:
         members = await get_trip_members(db, ctx["trip_id"])
@@ -842,11 +845,10 @@ async def edit_menu_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def edit_remove_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
-        await query.answer("Session expired.", show_alert=True)
+        await query.answer("Session expired. Tap ✏️ to reopen.", show_alert=True)
         return ConversationHandler.END
 
     member_id = int(query.data.split("_")[1])
@@ -862,6 +864,7 @@ async def edit_remove_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("Can't remove members with expenses.", show_alert=True)
         return EDIT_REMOVE
 
+    await query.answer()
     return await _show_edit_menu(update, context)
 
 
@@ -872,12 +875,12 @@ async def edit_noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def edit_menu_clearhistory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
-        await query.answer("Session expired.", show_alert=True)
+        await query.answer("Session expired. Tap ✏️ to reopen.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     await query.edit_message_text(
         f"Clear all expenses for *{ctx['trip_name']}*?\n\n"
@@ -914,12 +917,12 @@ async def edit_confirm_clear(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def edit_menu_deletetrip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     ctx = context.user_data.get(_ek(chat.id))
     if ctx is None:
-        await query.answer("Session expired.", show_alert=True)
+        await query.answer("Session expired. Tap ✏️ to reopen.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     await query.edit_message_text(
         f"Delete *{ctx['trip_name']}*?\n\n"
@@ -1025,6 +1028,8 @@ async def cancel_edit_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 def build_trip_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CommandHandler("newtrip", cmd_newtrip)],
+        name="trip",
+        persistent=True,
         states={
             TRIP_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_trip_name),
@@ -1069,6 +1074,8 @@ def build_trip_handler() -> ConversationHandler:
 def build_edit_trip_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_trip_entry, pattern=r"^edit_trip_\d+$")],
+        name="edit_trip",
+        persistent=True,
         states={
             EDIT_MENU: [
                 CallbackQueryHandler(edit_menu_rename, pattern=r"^emenu_rename$"),

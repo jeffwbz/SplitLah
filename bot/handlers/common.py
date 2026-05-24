@@ -84,6 +84,11 @@ async def cancel_all_flows(
         for handler in context.bot_data.get("conv_handlers", []):
             try:
                 handler._conversations.pop(conv_key, None)
+                # Also remove from persistence so cleared state isn't reloaded on restart.
+                persistence = getattr(context.application, "persistence", None)
+                handler_name = getattr(handler, "name", None)
+                if persistence is not None and handler_name:
+                    await persistence.update_conversation(handler_name, conv_key, None)
             except Exception:
                 pass
 

@@ -165,7 +165,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def onboard_pick_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
     iana = query.data[len("ob_tz_"):]
 
@@ -173,6 +172,7 @@ async def onboard_pick_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if ctx is None:
         await query.answer("Session expired. Use /start to try again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     ctx["tz"] = iana
     ctx["tz_label"] = next((lbl for lbl, iname in _POPULAR if iname == iana), iana)
@@ -215,13 +215,13 @@ async def onboard_skip_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def onboard_pick_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
 
     ctx = context.user_data.get(_ob_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /start to try again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     ctx["currency"] = query.data[len("ob_cur_"):]
     logger.debug("onboard_pick_currency: user=%s currency=%s", update.effective_user.id, ctx["currency"])
@@ -230,13 +230,13 @@ async def onboard_pick_currency(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def onboard_skip_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     chat = update.effective_chat
 
     ctx = context.user_data.get(_ob_k(chat.id))
     if ctx is None:
         await query.answer("Session expired. Use /start to try again.", show_alert=True)
         return ConversationHandler.END
+    await query.answer()
 
     logger.debug("onboard_skip_currency: user=%s, keeping default %s", update.effective_user.id, ctx["currency"])
     return await _ask_trip_name(query, ctx)
@@ -445,6 +445,8 @@ async def cancel_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def build_start_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
+        name="start",
+        persistent=True,
         states={
             ONBOARD_TZ: [
                 CallbackQueryHandler(onboard_pick_tz, pattern=r"^ob_tz_"),

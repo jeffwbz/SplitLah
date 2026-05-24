@@ -137,10 +137,10 @@ async def init_db() -> None:
             pass  # column already exists — expected on all non-fresh deploys
 
         # One-time cleanup: delete trips produced by the name-corruption bug.
-        # Pattern: trip name exactly matches the creator's display_name in trip_members.
-        # Restricted to GROUP chats (chat_id < 0) — private chats have positive chat_id
-        # equal to the user's Telegram ID, so a user legitimately naming a private trip
-        # after themselves would be incorrectly deleted without this guard.
+        # Two patterns are caught:
+        #   (a) Group chat: trip name matches the creator's own display_name in trip_members
+        #   (b) Any chat: trip name matches a VIRTUAL member's display_name
+        #       (virtual = telegram_user_id IS NULL; never a legitimate trip name collision)
         try:
             result = await conn.execute(text("""
                 DELETE FROM trips
@@ -150,13 +150,15 @@ async def init_db() -> None:
                     JOIN trip_members tm
                       ON tm.trip_id = t.id
                      AND lower(tm.display_name) = lower(t.name)
-                     AND tm.telegram_user_id = t.created_by
-                    WHERE t.chat_id < 0
+                    WHERE (
+                        (t.chat_id < 0 AND tm.telegram_user_id = t.created_by)
+                        OR tm.telegram_user_id IS NULL
+                    )
                 )
             """))
             deleted = result.rowcount if result.rowcount is not None else 0
             if deleted:
-                logger.info("init_db: removed %d corrupted trip(s) where name = creator display_name", deleted)
+                logger.info("init_db: removed %d corrupted trip(s) where name matches a member name", deleted)
         except Exception as exc:
             logger.warning("init_db: corrupted-trip cleanup failed: %s", exc)
 
