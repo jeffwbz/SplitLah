@@ -32,7 +32,7 @@ async def register_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # Callbacks that are ConversationHandler entry points — must NOT be swallowed by
 # silent_answer fallbacks when another flow is active, so they can interrupt and
 # start their own flow (which calls cancel_all_flows to clean up the old one).
-CONV_ENTRY_EXCL = r"^(?!edit_trip_\d|exp_act_\d)"
+CONV_ENTRY_EXCL = r"^(?!edit_trip_\d|exp_act_\d|ob_addmember_\d)"
 
 
 async def cancel_all_flows(

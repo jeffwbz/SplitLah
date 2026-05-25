@@ -35,8 +35,9 @@ from telegram.ext import (
 )
 
 from bot import config
-from bot.currency import convert, is_currency_supported, resolve_alias
+from bot.currency import convert, is_currency_supported, resolve_alias, search_currencies
 from bot.database import (
+    count_expenses,
     create_expense,
     get_active_trip_id,
     get_db,
@@ -64,6 +65,7 @@ logger = logging.getLogger(__name__)
     SPLIT_VALS,
     CONFIRM,
 ) = range(10)
+CURRENCY_RESULTS = 10
 
 
 def _k(chat_id: int) -> str:
@@ -408,7 +410,7 @@ async def got_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     token = query.data.split("_", 1)[1]
     if token == "other":
         await query.edit_message_text(
-            "Currency code?  _(e.g. HKD, KRW, TWD)_",
+            "Search by code or name:  _(e.g. HKD, taiwan, Kip)_",
             parse_mode="Markdown",
             reply_markup=_back_cancel_kb(),
         )
@@ -419,40 +421,60 @@ async def got_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def got_currency_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User typed a search query — find matching currencies."""
     chat = update.effective_chat
     ctx = context.user_data.get(_k(chat.id))
     if ctx is None:
         return ConversationHandler.END
 
-    raw = update.message.text.strip().upper()
+    query_text = update.message.text.strip()
     try:
         await update.message.delete()
     except Exception:
         pass
 
-    if not (2 <= len(raw) <= 5 and raw.isalpha()):
+    results = await search_currencies(query_text)
+
+    if not results:
         ctx["bot_msg_id"] = await safe_edit(
             context, chat.id, ctx["bot_msg_id"],
-            "Invalid code — enter 2–5 letters  _(e.g. HKD, KRW)_:",
+            f"No results for *{query_text}* — try again:  _(e.g. HKD, taiwan, Kip)_",
             parse_mode="Markdown",
             reply_markup=_back_cancel_kb(),
         )
         return CURRENCY_TXT
 
-    currency = resolve_alias(raw)
+    if len(results) == 1:
+        code, _ = results[0]
+        ctx["bot_msg_id"] = await safe_edit(context, chat.id, ctx["bot_msg_id"], "Checking rate…")
+        return await _resolve_currency(context, chat.id, ctx, code)
 
-    if not await is_currency_supported(currency):
-        hint = f"  _(did you mean {currency}?)_" if currency != raw else ""
-        ctx["bot_msg_id"] = await safe_edit(
-            context, chat.id, ctx["bot_msg_id"],
-            f"`{raw}` not recognised{hint} — try another:",
-            parse_mode="Markdown",
-            reply_markup=_back_cancel_kb(),
-        )
-        return CURRENCY_TXT
+    rows = [
+        [InlineKeyboardButton(f"{code} — {name}", callback_data=f"ecursel_{code}")]
+        for code, name in results
+    ]
+    rows.append(_back_cancel_row())
+    ctx["bot_msg_id"] = await safe_edit(
+        context, chat.id, ctx["bot_msg_id"],
+        f"{len(results)} results:",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+    return CURRENCY_RESULTS
 
-    ctx["bot_msg_id"] = await safe_edit(context, chat.id, ctx["bot_msg_id"], "Checking rate…")
-    return await _resolve_currency(context, chat.id, ctx, currency)
+
+async def got_currency_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User picked a currency from search results."""
+    query = update.callback_query
+    chat = update.effective_chat
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        await query.answer("Session expired. Use /add to start again.", show_alert=True)
+        return ConversationHandler.END
+    await query.answer()
+
+    code = query.data[len("ecursel_"):]
+    await query.edit_message_text("Checking rate…")
+    return await _resolve_currency(context, chat.id, ctx, code)
 
 
 async def _resolve_currency(
@@ -686,6 +708,7 @@ async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 created_by=user.id,
                 shares=ctx["shares"],
             )
+            trip_expense_num = await count_expenses(db, ctx["trip_id"])
     except Exception as exc:
         logger.exception("confirm_expense: DB error for user=%s chat=%s: %s", user.id, chat.id, exc)
         await query.edit_message_text("Something went wrong saving the expense. Please try again.")
@@ -707,7 +730,7 @@ async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     context.user_data.pop(_k(chat.id), None)
     await query.edit_message_text(
-        f"✅ *Expense #{expense_id} saved*\n\n{summary}",
+        f"✅ *Expense #{trip_expense_num} saved*\n\n{summary}",
         parse_mode="Markdown",
     )
     return ConversationHandler.END
@@ -770,6 +793,23 @@ async def _back_to_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         reply_markup=_currency_keyboard(ctx.get("recent_currencies")),
     )
     return CURRENCY
+
+
+async def _back_to_currency_txt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from CURRENCY_RESULTS → re-show currency search prompt."""
+    query = update.callback_query
+    chat = update.effective_chat
+    ctx = context.user_data.get(_k(chat.id))
+    if ctx is None:
+        await query.answer("Session expired. Use /add to start again.", show_alert=True)
+        return ConversationHandler.END
+    await query.answer()
+    await query.edit_message_text(
+        "Search by code or name:  _(e.g. HKD, taiwan, Kip)_",
+        parse_mode="Markdown",
+        reply_markup=_back_cancel_kb(),
+    )
+    return CURRENCY_TXT
 
 
 async def _back_to_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -955,7 +995,12 @@ def build_expense_handler() -> ConversationHandler:
             ],
             CURRENCY_TXT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_currency_text),
-                back(_back_to_amount, pattern=r"^exp_back$"),
+                back(_back_to_currency, pattern=r"^exp_back$"),
+                CallbackQueryHandler(cancel_expense, pattern=r"^exp_cancel$"),
+            ],
+            CURRENCY_RESULTS: [
+                CallbackQueryHandler(got_currency_results, pattern=r"^ecursel_"),
+                back(_back_to_currency_txt, pattern=r"^exp_back$"),
                 CallbackQueryHandler(cancel_expense, pattern=r"^exp_cancel$"),
             ],
             PAYER: [

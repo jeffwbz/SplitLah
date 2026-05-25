@@ -397,7 +397,7 @@ async def onboard_got_trip_name(update: Update, context: ContextTypes.DEFAULT_TY
         f"{body}",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(add_btn, callback_data=f"edit_trip_{trip_id}")],
+            [InlineKeyboardButton(add_btn, callback_data=f"ob_addmember_{trip_id}")],
             [InlineKeyboardButton("▶ Start logging", callback_data="ob_done")],
         ]),
     )

@@ -574,6 +574,44 @@ async def switch_trip_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # Edit trip — entry
 # ---------------------------------------------------------------------------
 
+async def add_member_direct_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """ob_addmember_{trip_id} — go directly to member name input, bypassing the edit menu."""
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    chat = update.effective_chat
+    user = update.effective_user
+    trip_id = int(query.data.split("_")[-1])
+    logger.debug("add_member_direct_entry: trip=%s chat=%s user=%s", trip_id, chat.id, user.id)
+
+    await cancel_all_flows(context, chat.id, user_id=user.id)
+
+    async with get_db() as db:
+        trip = await get_trip(db, trip_id)
+
+    if not trip or trip["chat_id"] != chat.id:
+        await query.edit_message_text("Trip not found.")
+        return ConversationHandler.END
+
+    context.user_data[_ek(chat.id)] = {
+        "trip_id": trip_id,
+        "trip_name": trip["name"],
+        "bot_msg_id": query.message.message_id,
+    }
+
+    await query.edit_message_text(
+        "Enter their name:\n\n_For someone who isn't in this group chat._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("← Back", callback_data="emenu_back"),
+             InlineKeyboardButton("❌ Cancel", callback_data="edit_cancel")],
+        ]),
+    )
+    return EDIT_ADD_VNAME
+
+
 async def edit_trip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     try:
@@ -1073,7 +1111,10 @@ def build_trip_handler() -> ConversationHandler:
 
 def build_edit_trip_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CallbackQueryHandler(edit_trip_entry, pattern=r"^edit_trip_\d+$")],
+        entry_points=[
+            CallbackQueryHandler(edit_trip_entry, pattern=r"^edit_trip_\d+$"),
+            CallbackQueryHandler(add_member_direct_entry, pattern=r"^ob_addmember_\d+$"),
+        ],
         name="edit_trip",
         persistent=True,
         states={

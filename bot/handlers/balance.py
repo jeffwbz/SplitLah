@@ -368,7 +368,7 @@ async def _send_history_page(
     for exp in expenses:
         desc = exp["description"]
         short = desc[:26] + "…" if len(desc) > 26 else desc
-        label = f"#{exp['id']} {short} — {fmt_money(exp['amount_base'], trip['base_currency'])}"
+        label = f"#{exp.get('trip_num', exp['id'])} {short} — {fmt_money(exp['amount_base'], trip['base_currency'])}"
         rows.append([InlineKeyboardButton(label, callback_data=f"exp_act_{exp['id']}_{trip['id']}_{page}")])
 
     nav: list[InlineKeyboardButton] = []
@@ -456,7 +456,7 @@ async def nudge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             share_str = _html.escape(fmt_money(exp["share_amount"], base_currency))
             desc = _html.escape(exp["description"])
             payer = _html.escape(exp["payer_name"])
-            lines.append(f"  #{exp['id']} {desc} — {share_str} share <i>(paid by {payer})</i>")
+            lines.append(f"  #{exp.get('trip_num', exp['id'])} {desc} — {share_str} share <i>(paid by {payer})</i>")
         if len(expense_shares) > _MAX:
             lines.append(f"  <i>…and {len(expense_shares) - _MAX} more</i>")
 

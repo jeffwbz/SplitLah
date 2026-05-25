@@ -58,7 +58,8 @@ def _back_to_detail_kb() -> InlineKeyboardMarkup:
 
 
 def _build_detail_text(exp: dict, base_currency: str, shares: list[dict], tz=None) -> str:
-    lines = [f"*#{exp['id']} {exp['description']}*", ""]
+    num = exp.get("trip_num", exp["id"])
+    lines = [f"*#{num} {exp['description']}*", ""]
     if exp["currency"] != base_currency:
         lines.append(
             f"{fmt_money(exp['amount'], exp['currency'])}"
@@ -110,6 +111,7 @@ async def expense_action_entry(update: Update, context: ContextTypes.DEFAULT_TYP
 
     context.user_data[_k(chat.id)] = {
         "expense_id": expense_id,
+        "trip_num": exp.get("trip_num", expense_id),
         "trip_id": trip_id,
         "page": page,
         "base_currency": trip["base_currency"],
@@ -186,8 +188,9 @@ async def expact_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         exp = await get_expense_by_id(db, ctx["expense_id"])
     desc = exp["description"] if exp else "this expense"
 
+    num = ctx.get("trip_num", ctx["expense_id"])
     await query.edit_message_text(
-        f"Delete *#{ctx['expense_id']} {desc}*?\n\n_This can't be undone._",
+        f"Delete *#{num} {desc}*?\n\n_This can't be undone._",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Delete", callback_data="expact_confirm_del")],

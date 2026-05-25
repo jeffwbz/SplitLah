@@ -439,11 +439,20 @@ async def create_expense(
 async def get_expense_history(
     session: AsyncSession, trip_id: int, limit: int = 10, offset: int = 0
 ) -> list[dict]:
+    _e2 = t_expenses.alias("e2")
+    trip_num_sq = (
+        select(func.count())
+        .select_from(_e2)
+        .where((_e2.c.trip_id == t_expenses.c.trip_id) & (_e2.c.id <= t_expenses.c.id))
+        .correlate(t_expenses)
+        .scalar_subquery()
+    )
     rows = (
         await session.execute(
             select(
                 t_expenses,
                 t_trip_members.c.display_name.label("payer_name"),
+                trip_num_sq.label("trip_num"),
             )
             .outerjoin(t_trip_members, t_trip_members.c.id == t_expenses.c.paid_by_member)
             .where(t_expenses.c.trip_id == trip_id)
@@ -560,9 +569,17 @@ async def get_expense_shares(session: AsyncSession, expense_id: int) -> list[dic
 
 
 async def get_expense_by_id(session: AsyncSession, expense_id: int) -> dict | None:
+    _e2 = t_expenses.alias("e2")
+    trip_num_sq = (
+        select(func.count())
+        .select_from(_e2)
+        .where((_e2.c.trip_id == t_expenses.c.trip_id) & (_e2.c.id <= t_expenses.c.id))
+        .correlate(t_expenses)
+        .scalar_subquery()
+    )
     row = (
         await session.execute(
-            select(t_expenses, t_trip_members.c.display_name.label("payer_name"))
+            select(t_expenses, t_trip_members.c.display_name.label("payer_name"), trip_num_sq.label("trip_num"))
             .outerjoin(t_trip_members, t_trip_members.c.id == t_expenses.c.paid_by_member)
             .where(t_expenses.c.id == expense_id)
         )
@@ -612,6 +629,14 @@ async def get_member_expense_shares(
     session: AsyncSession, trip_id: int, member_id: int
 ) -> list[dict]:
     """Expenses in a trip where member_id has a share but did NOT pay — ordered newest first."""
+    _e2 = t_expenses.alias("e2")
+    trip_num_sq = (
+        select(func.count())
+        .select_from(_e2)
+        .where((_e2.c.trip_id == t_expenses.c.trip_id) & (_e2.c.id <= t_expenses.c.id))
+        .correlate(t_expenses)
+        .scalar_subquery()
+    )
     rows = (
         await session.execute(
             select(
@@ -620,6 +645,7 @@ async def get_member_expense_shares(
                 t_expenses.c.base_currency,
                 t_shares.c.share_amount,
                 t_trip_members.c.display_name.label("payer_name"),
+                trip_num_sq.label("trip_num"),
             )
             .join(t_shares, t_shares.c.expense_id == t_expenses.c.id)
             .join(t_trip_members, t_trip_members.c.id == t_expenses.c.paid_by_member)
