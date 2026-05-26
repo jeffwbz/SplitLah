@@ -86,14 +86,14 @@ async def _post_init(application: Application) -> None:
         "• Create trips for holidays, housemates, or any shared outing\n"
         "• Log expenses in any currency — live FX conversion included\n"
         "• Split equally, by ratio, percentage, or exact amount\n"
-        "• Searchable currency picker: type \"Laos\" or \"Kip\" to find LAK\n"
-        "• /simplify shows the minimum payments to settle all debts\n"
-        "• Nudge friends with an itemised list of what they owe\n"
+        "• 160+ currencies with smart search — type a country name to find the code\n"
+        "• /simplify shows the minimum transfers to settle all debts\n"
+        "• 👋 Nudge debtors with an itemised breakdown of what they owe\n"
         "• Works in group chats and private chats\n\n"
         "Free. No ads. No subscriptions."
     )
     await application.bot.set_my_short_description(
-        "Multi-currency expense splitting across trips. Settle up with the fewest payments. Free."
+        "Multi-currency group expense splitting. Settle all debts with the fewest transfers. Free · no ads."
     )
     logger.info("SplitLah ready.")
 

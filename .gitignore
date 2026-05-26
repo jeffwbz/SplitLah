@@ -15,3 +15,4 @@ dist/
 *.log
 bot_*.txt
 .claude/
+.DS_Store
