@@ -68,30 +68,32 @@ async def _post_init(application: Application) -> None:
     )
     await init_db()
     await application.bot.set_my_commands([
-        BotCommand("newtrip", "Create a new trip"),
-        BotCommand("trips", "List trips · tap ✏️ to edit"),
+        BotCommand("start", "First-time setup: timezone → currency → first trip"),
+        BotCommand("newtrip", "Create a new named trip"),
+        BotCommand("trips", "List trips · tap ✏️ to rename, manage members, or delete"),
         BotCommand("add", "Record a new expense"),
-        BotCommand("balances", "See who owes what"),
-        BotCommand("simplify", "Minimises the number of payments to settle all debts"),
-        BotCommand("settle", "Record a payment"),
-        BotCommand("history", "Browse & manage past expenses"),
-        BotCommand("currency", "Change trip base currency"),
+        BotCommand("balances", "Net balance for every member in the active trip"),
+        BotCommand("simplify", "Minimum transfers to settle all debts"),
+        BotCommand("settle", "Record a payment between members"),
+        BotCommand("history", "Browse past expenses · tap any row to edit or delete"),
+        BotCommand("currency", "Change the active trip's base currency"),
+        BotCommand("settimezone", "Set your personal display timezone"),
         BotCommand("help", "Show all commands"),
-        BotCommand("settimezone", "Set your display timezone"),
-        BotCommand("cancel", "Cancel current operation"),
+        BotCommand("cancel", "Abort the current operation"),
     ])
     await application.bot.set_my_description(
         "SplitLah — split group expenses, hassle-free.\n\n"
-        "• Create trips for holidays, housemates, or any outing\n"
-        "• Log expenses in any currency with live FX conversion\n"
+        "• Create trips for holidays, housemates, or any shared outing\n"
+        "• Log expenses in any currency — live FX conversion included\n"
         "• Split equally, by ratio, percentage, or exact amount\n"
-        "• /simplify — figures out the fewest payments needed to settle all debts\n"
-        "• Nudge friends who owe you\n"
+        "• Searchable currency picker: type \"Laos\" or \"Kip\" to find LAK\n"
+        "• /simplify shows the minimum payments to settle all debts\n"
+        "• Nudge friends with an itemised list of what they owe\n"
         "• Works in group chats and private chats\n\n"
         "Free. No ads. No subscriptions."
     )
     await application.bot.set_my_short_description(
-        "Track shared expenses and settle up with the fewest payments. Free, no ads."
+        "Multi-currency expense splitting across trips. Settle up with the fewest payments. Free."
     )
     logger.info("SplitLah ready.")
 
